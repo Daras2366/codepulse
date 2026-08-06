@@ -2,9 +2,11 @@ from fastapi import APIRouter
 
 router = APIRouter()
 
-
-@router.get("/")
-def dashboard():
+@router.get("/stats")
+def get_dashboard_stats():
     return {
-        "title": "Dashboard API"
+        "problemsSolved": 342,
+        "contestRating": 1820,
+        "streak": 47,
+        "acceptanceRate": 78.3
     }
