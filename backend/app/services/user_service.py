@@ -4,6 +4,8 @@ from app.models.user import User
 from app.repositories.user_repository import UserRepository
 from app.schemas.user import UserCreate
 
+from app.core.security import hash_password
+
 class UserService:
 
     @staticmethod
@@ -17,7 +19,7 @@ class UserService:
         user = User(
             name=user_data.name,
             email=user_data.email,
-            password_hash=user_data.password,   # temporary
+            password_hash=hash_password(user_data.password)
         )
 
         return UserRepository.create(db, user)
