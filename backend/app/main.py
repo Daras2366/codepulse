@@ -3,6 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import settings
 from app.routers import dashboard
+from app.routers import users
 
 from app.core.database import Base, engine 
 import app.models
@@ -28,6 +29,11 @@ app.include_router(
     tags=["Dashboard"],
 )
 
+app.include_router(
+    users.router,
+    prefix="/users",
+    tags=["Users"]
+)
 
 @app.get("/")
 def root():
