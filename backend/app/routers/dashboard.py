@@ -1,12 +1,13 @@
 from fastapi import APIRouter
 
+from app.schemas.dashboard import DashboardStats
+from app.services.dashboard_service import DashboardService
+
 router = APIRouter()
 
-@router.get("/stats")
+service = DashboardService()
+
+
+@router.get("/stats", response_model=DashboardStats,)
 def get_dashboard_stats():
-    return {
-        "problemsSolved": 342,
-        "contestRating": 1820,
-        "streak": 47,
-        "acceptanceRate": 78.3
-    }
+    return service.get_stats()
