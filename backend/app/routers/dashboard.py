@@ -7,7 +7,11 @@ router = APIRouter()
 
 service = DashboardService()
 
-
-@router.get("/stats", response_model=DashboardStats,)
+@router.get(
+    "/stats",
+    summary="Get dashboard statistics",
+    description="Returns coding statistics for the logged-in user.",
+    response_model=DashboardStats,
+)
 def get_dashboard_stats():
     return service.get_stats()
