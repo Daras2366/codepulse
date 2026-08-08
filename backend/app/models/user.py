@@ -1,20 +1,67 @@
-from sqlalchemy import Column, Integer, String, DateTime
-from sqlalchemy.sql import func
+from sqlalchemy import String, Boolean
+from sqlalchemy.orm import Mapped, mapped_column, relationship
 
-from app.core.database import Base
+from app.models.base import Base, TimestampMixin
 
 
-class User(Base):
+class User(Base, TimestampMixin):
     __tablename__ = "users"
 
-    id = Column(Integer, primary_key=True, index=True)
-    name = Column(String(100), nullable=False)
-    email = Column(String(255), unique=True, nullable=False, index=True)
-    password_hash = Column(String(255), nullable=False)
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    id: Mapped[int] = mapped_column(primary_key=True)
 
-    updated_at = Column(
-        DateTime(timezone=True),
-        server_default=func.now(),
-        onupdate=func.now()
+    username: Mapped[str] = mapped_column(
+        String(30),
+        unique=True,
+        nullable=False,
+        index=True,
+    )
+
+    email: Mapped[str] = mapped_column(
+        String(255),
+        unique=True,
+        nullable=False,
+        index=True,
+    )
+
+    password_hash: Mapped[str] = mapped_column(
+        String(255),
+        nullable=False,
+    )
+
+    full_name: Mapped[str | None] = mapped_column(
+        String(100)
+    )
+    
+    country: Mapped[str | None] = mapped_column(
+        String(100)
+    )
+
+    profile_picture: Mapped[str | None] = mapped_column(
+        String(500)
+    )
+
+    is_active: Mapped[bool] = mapped_column(
+        Boolean,
+        default=True,
+        nullable=False,
+    )
+
+    # ---------------- Relationships ---------------- #
+
+    platform_profiles = relationship(
+        "PlatformProfile",
+        back_populates="user",
+        cascade="all, delete-orphan",
+    )
+
+    goals = relationship(
+        "Goal",
+        back_populates="user",
+        cascade="all, delete-orphan",
+    )
+
+    achievements = relationship(
+        "UserAchievement",
+        back_populates="user",
+        cascade="all, delete-orphan",
     )

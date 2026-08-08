@@ -139,10 +139,10 @@ One user may connect multiple platforms.
 | username | VARCHAR(100) | NOT NULL | Platform username |
 | profile_url | VARCHAR(500) | NULL | Public profile URL |
 | current_rating | Integer | NULL | Current rating |
-| highest_rating | Integer | NULL | Highest rating achieved |
-| global_rank | Integer | NULL | Current global rank |
-| solved_count | Integer | NULL | Problems solved |
-| contest_count | Integer | NULL | Contests participated |
+| max_rating | Integer | NULL | Highest rating achieved |
+| rank | Integer | NULL | Current global rank |
+| problems_solved | Integer | NULL | Problems solved |
+| contests_attended | Integer | NULL | Contests participated |
 | last_synced_at | TIMESTAMP | NULL | Last successful synchronization |
 | is_connected | BOOLEAN | DEFAULT TRUE | Connection status |
 | created_at | TIMESTAMP | NOT NULL | Creation timestamp |
@@ -298,7 +298,7 @@ Only contests that at least one CodePulse user has participated in are stored.
 | id | Integer | Primary Key | Contest ID |
 | platform | VARCHAR(30) | NOT NULL | Platform |
 | platform_contest_id | VARCHAR(100) | NOT NULL | Platform contest ID |
-| name | VARCHAR(255) | NOT NULL | Contest name |
+| title | VARCHAR(255) | NOT NULL | Contest title |
 | url | VARCHAR(500) | NULL | Contest URL |
 | start_time | TIMESTAMP | NOT NULL | Contest start |
 | duration_minutes | Integer | NOT NULL | Contest duration |
@@ -406,7 +406,6 @@ Stores user-created goals.
 | goal_type | VARCHAR(50) | NOT NULL | Goal category |
 | target_value | Integer | NOT NULL | Target |
 | current_value | Integer | DEFAULT 0 | Progress |
-| deadline | DATE | NULL | Deadline |
 | status | VARCHAR(20) | DEFAULT 'active' | Goal status |
 | created_at | TIMESTAMP | NOT NULL | Creation timestamp |
 | updated_at | TIMESTAMP | NOT NULL | Update timestamp |
@@ -433,7 +432,7 @@ Master table containing all achievements available in CodePulse.
 | Column | Type | Constraints | Description |
 |---------|------|-------------|-------------|
 | id | Integer | Primary Key | Achievement ID |
-| title | VARCHAR(100) | UNIQUE | Achievement title |
+| name | VARCHAR(100) | UNIQUE | Achievement name |
 | description | TEXT | NOT NULL | Achievement description |
 | icon | VARCHAR(255) | NULL | Icon identifier |
 | category | VARCHAR(50) | NULL | Category |
