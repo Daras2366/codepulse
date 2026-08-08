@@ -8,8 +8,6 @@ from app.routers import auth
 from app.core.database import Base, engine 
 import app.models
 
-Base.metadata.create_all(bind=engine)
-
 app = FastAPI(
     title="CodePulse API",
     version="1.0.0"
