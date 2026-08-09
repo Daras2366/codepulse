@@ -1,9 +1,10 @@
 from datetime import datetime
 
-from sqlalchemy import DateTime, Float, Integer, String, UniqueConstraint
+from sqlalchemy import DateTime, Float, Integer, String, UniqueConstraint, Enum
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.models.base import Base, TimestampMixin
+from app.models.enums import Platform
 
 
 class Contest(Base, TimestampMixin):
@@ -32,7 +33,7 @@ class Contest(Base, TimestampMixin):
     )
 
     platform: Mapped[str] = mapped_column(
-        String(30),
+        Enum(Platform),
         nullable=False,
     )
     

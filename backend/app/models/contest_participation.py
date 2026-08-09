@@ -25,6 +25,7 @@ class ContestParticipation(Base, TimestampMixin):
     contest_id: Mapped[int] = mapped_column(
         ForeignKey("contests.id", ondelete="CASCADE"),
         nullable=False,
+        index=True
     )
 
     rank: Mapped[int | None] = mapped_column(Integer)

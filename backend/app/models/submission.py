@@ -29,6 +29,7 @@ class Submission(Base, TimestampMixin):
     problem_id: Mapped[int] = mapped_column(
         ForeignKey("problems.id", ondelete="CASCADE"),
         nullable=False,
+        index=True
     )
 
     submitted_at: Mapped[datetime] = mapped_column(
@@ -50,7 +51,8 @@ class Submission(Base, TimestampMixin):
     )
     
     contest_id: Mapped[int | None] = mapped_column(
-        ForeignKey("contests.id", ondelete="SET NULL")
+        ForeignKey("contests.id", ondelete="SET NULL"),
+        index=True
     )
 
     profile = relationship(

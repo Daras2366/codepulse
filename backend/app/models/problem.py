@@ -42,7 +42,7 @@ class Problem(Base, TimestampMixin):
     )
     
     problem_url: Mapped[str] = mapped_column(
-        String(255),
+        String(500),
         unique=True,
         nullable=False,
     )

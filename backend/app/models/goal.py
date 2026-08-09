@@ -13,6 +13,7 @@ class Goal(Base, TimestampMixin):
     user_id: Mapped[int] = mapped_column(
         ForeignKey("users.id", ondelete="CASCADE"),
         nullable=False,
+        index=True
     )
 
     title: Mapped[str] = mapped_column(
