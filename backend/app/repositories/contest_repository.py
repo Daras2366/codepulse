@@ -38,10 +38,17 @@ class ContestRepository(BaseRepository):
             .first()
         )
 
-    def get_by_platform(self, platform: Platform) -> List[Contest]:
+    def get_by_platform(
+        self,
+        platform: Platform,
+        skip: int = 0,
+        limit: int = 100,
+    ) -> List[Contest]:
         return (
             self.db.query(Contest)
             .filter(Contest.platform == platform)
+            .offset(skip)
+            .limit(limit)
             .all()
         )
 

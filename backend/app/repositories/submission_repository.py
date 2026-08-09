@@ -38,20 +38,28 @@ class SubmissionRepository(BaseRepository):
     def get_by_profile(
         self,
         profile_id: int,
+        skip: int = 0,
+        limit: int = 100,
     ) -> List[Submission]:
         return (
             self.db.query(Submission)
             .filter(Submission.profile_id == profile_id)
+            .offset(skip)
+            .limit(limit)
             .all()
         )
 
     def get_by_problem(
         self,
         problem_id: int,
+        skip: int = 0,
+        limit: int = 100,
     ) -> List[Submission]:
         return (
             self.db.query(Submission)
             .filter(Submission.problem_id == problem_id)
+            .offset(skip)
+            .limit(limit)
             .all()
         )
 
@@ -59,6 +67,8 @@ class SubmissionRepository(BaseRepository):
         self,
         profile_id: int,
         problem_id: int,
+        skip: int = 0,
+        limit: int = 100,
     ) -> List[Submission]:
         return (
             self.db.query(Submission)
@@ -66,6 +76,8 @@ class SubmissionRepository(BaseRepository):
                 Submission.profile_id == profile_id,
                 Submission.problem_id == problem_id,
             )
+            .offset(skip)
+            .limit(limit)
             .all()
         )
 

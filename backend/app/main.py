@@ -4,8 +4,16 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.routers import dashboard
 from app.routers import users
 from app.routers import auth
+from app.routers import achievements
+from app.routers import contest_participations
+from app.routers import contests
+from app.routers import goals
+from app.routers import platform_profiles
+from app.routers import problem_router
+from app.routers import rating_history
+from app.routers import submissions
+from app.routers import topics
 
-from app.core.database import Base, engine 
 import app.models
 
 app = FastAPI(
@@ -20,6 +28,16 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+app.include_router(problem_router.router)
+app.include_router(platform_profiles.router)
+app.include_router(goals.router)
+app.include_router(submissions.router)
+app.include_router(contests.router)
+app.include_router(contest_participations.router)
+app.include_router(rating_history.router)
+app.include_router(achievements.router)
+app.include_router(topics.router)
 
 app.include_router(
     dashboard.router,

@@ -40,11 +40,15 @@ class ContestParticipationRepository(BaseRepository):
     def get_by_profile(
         self,
         profile_id: int,
+        skip: int = 0,
+        limit: int = 100,
     ) -> List[ContestParticipation]:
         return (
             self.db.query(ContestParticipation)
             .filter(ContestParticipation.profile_id == profile_id)
             .order_by(ContestParticipation.created_at.desc())
+            .offset(skip)
+            .limit(limit)
             .all()
         )
 

@@ -24,10 +24,17 @@ class PlatformProfileRepository(BaseRepository):
             .first()
         )
 
-    def get_by_user(self, user_id: int) -> List[PlatformProfile]:
+    def get_by_user(
+        self,
+        user_id: int,
+        skip: int = 0,
+        limit: int = 100,
+    ) -> List[PlatformProfile]:
         return (
             self.db.query(PlatformProfile)
             .filter(PlatformProfile.user_id == user_id)
+            .offset(skip)
+            .limit(limit)
             .all()
         )
 

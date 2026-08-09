@@ -31,11 +31,18 @@ class RatingHistoryRepository(BaseRepository):
             .first()
         )
 
-    def get_by_profile(self, profile_id: int) -> List[RatingHistory]:
+    def get_by_profile(
+        self,
+        profile_id: int,
+        skip: int = 0,
+        limit: int = 100,
+    ) -> List[RatingHistory]:
         return (
             self.db.query(RatingHistory)
             .filter(RatingHistory.profile_id == profile_id)
             .order_by(RatingHistory.recorded_at.asc())
+            .offset(skip)
+            .limit(limit)
             .all()
         )
 

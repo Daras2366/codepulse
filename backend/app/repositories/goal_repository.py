@@ -24,10 +24,17 @@ class GoalRepository(BaseRepository):
             .first()
         )
 
-    def get_by_user(self, user_id: int) -> List[Goal]:
+    def get_by_user(
+        self,
+        user_id: int,
+        skip: int = 0,
+        limit: int = 100,
+    ) -> List[Goal]:
         return (
             self.db.query(Goal)
             .filter(Goal.user_id == user_id)
+            .offset(skip)
+            .limit(limit)
             .all()
         )
 
