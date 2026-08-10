@@ -131,3 +131,17 @@ class SubmissionRepository(BaseRepository):
     ) -> None:
         self.db.delete(submission)
         self.db.commit()
+        
+    def get_by_platform_submission_id(
+        self,
+        profile_id: int,
+        platform_submission_id: str,
+    ) -> Submission | None:
+        return (
+            self.db.query(Submission)
+            .filter(
+                Submission.profile_id == profile_id,
+                Submission.platform_submission_id == platform_submission_id,
+            )
+            .first()
+        )

@@ -19,7 +19,10 @@ class Problem(Base, TimestampMixin):
     id: Mapped[int] = mapped_column(primary_key=True)
     
     platform: Mapped[Platform] = mapped_column(
-        Enum(Platform),
+        Enum(
+            Platform,
+            values_callable=lambda enum_cls: [member.value for member in enum_cls],
+        ),
         nullable=False,
     )
 

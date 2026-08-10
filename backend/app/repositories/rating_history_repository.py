@@ -70,3 +70,17 @@ class RatingHistoryRepository(BaseRepository):
             .first()
             is not None
         )
+
+    def get_by_profile_contest(
+        self,
+        profile_id: int,
+        contest_id: int,
+    ) -> RatingHistory | None:
+        return (
+            self.db.query(RatingHistory)
+            .filter(
+                RatingHistory.profile_id == profile_id,
+                RatingHistory.contest_id == contest_id,
+            )
+            .first()
+        )

@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from sqlalchemy import DateTime, ForeignKey, Integer
+from sqlalchemy import DateTime, ForeignKey, Integer, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.models.base import Base
@@ -8,6 +8,14 @@ from app.models.base import Base
 
 class RatingHistory(Base):
     __tablename__ = "rating_history"
+    
+    __table_args__ = (
+        UniqueConstraint(
+            "profile_id",
+            "contest_id",
+            name="uq_profile_rating_contest",
+        ),
+    )
 
     id: Mapped[int] = mapped_column(primary_key=True)
 

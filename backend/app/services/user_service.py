@@ -35,9 +35,10 @@ class UserService:
             raise ValueError("Email already registered")
 
         user = User(
-            name=user_data.name,
+            username=user_data.username,
+            full_name=user_data.full_name,
             email=user_data.email,
-            password_hash=hash_password(user_data.password)
+            password_hash=hash_password(user_data.password),
         )
 
         return UserRepository.create(db, user)

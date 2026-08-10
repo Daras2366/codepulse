@@ -1,18 +1,19 @@
-from pydantic import BaseModel, EmailStr
 from datetime import datetime
+from pydantic import BaseModel, ConfigDict, EmailStr
 
 
 class UserCreate(BaseModel):
-    name: str
+    username: str
+    full_name: str | None = None
     email: EmailStr
     password: str
 
 
 class UserResponse(BaseModel):
     id: int
-    name: str
+    username: str
+    full_name: str | None
     email: EmailStr
     created_at: datetime
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)

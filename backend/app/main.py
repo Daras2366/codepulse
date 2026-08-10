@@ -13,6 +13,7 @@ from app.routers import problem_router
 from app.routers import rating_history
 from app.routers import submissions
 from app.routers import topics
+from app.routers import sync
 
 import app.models
 
@@ -38,6 +39,7 @@ app.include_router(contest_participations.router)
 app.include_router(rating_history.router)
 app.include_router(achievements.router)
 app.include_router(topics.router)
+app.include_router(sync.router)
 
 app.include_router(
     dashboard.router,

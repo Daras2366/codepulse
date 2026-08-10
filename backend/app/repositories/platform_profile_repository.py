@@ -80,3 +80,4 @@ class PlatformProfileRepository(BaseRepository):
             .first()
             is not None
         )
+        

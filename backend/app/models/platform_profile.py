@@ -34,7 +34,10 @@ class PlatformProfile(Base, TimestampMixin):
     )
 
     platform: Mapped[Platform] = mapped_column(
-        Enum(Platform),
+        Enum(
+            Platform,
+            values_callable=lambda enum_cls: [member.value for member in enum_cls],
+        ),
         nullable=False,
     )
 
@@ -70,7 +73,7 @@ class PlatformProfile(Base, TimestampMixin):
         nullable=False,
     )
 
-    last_synced_at = mapped_column(
+    last_synced_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True)
     )
 

@@ -32,8 +32,11 @@ class Contest(Base, TimestampMixin):
         index=True,
     )
 
-    platform: Mapped[str] = mapped_column(
-        Enum(Platform),
+    platform: Mapped[Platform] = mapped_column(
+        Enum(
+            Platform,
+            values_callable=lambda enum_cls: [member.value for member in enum_cls],
+        ),
         nullable=False,
     )
     
