@@ -5,6 +5,7 @@ import re
 import unicodedata
 
 from sqlalchemy import distinct, func
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.integrations.codeforces_client import CodeforcesClient
@@ -39,6 +40,10 @@ class PlatformProfileNotFoundError(CodeforcesSyncError):
 
 class UnsupportedPlatformError(CodeforcesSyncError):
     """Raised when the profile is not a Codeforces profile."""
+
+
+class ProfileAccessDeniedError(CodeforcesSyncError):
+    """Raised when the authenticated user does not own the profile."""
 
 
 class CodeforcesSyncService(BaseService):
@@ -83,6 +88,7 @@ class CodeforcesSyncService(BaseService):
     def sync_codeforces_profile(
         self,
         profile_id: int,
+        user_id: int,
     ) -> SyncResult:
         """
         Synchronize one Codeforces platform profile.
@@ -92,25 +98,28 @@ class CodeforcesSyncService(BaseService):
         """
 
         try:
-            profile = self._get_codeforces_profile(profile_id)
+            profile = self._get_codeforces_profile(
+                profile_id,
+                user_id,
+            )
 
             remote_profile = self._as_mapping(
-                self.client.fetch_profile(profile.username),
+                self._fetch_remote_profile(profile.username),
                 "Codeforces profile",
             )
 
             remote_submissions = self._as_sequence(
-                self.client.fetch_submissions(profile.username),
+                self._fetch_remote_submissions(profile.username),
                 "Codeforces submissions",
             )
 
             remote_ratings = self._as_sequence(
-                self.client.fetch_rating_history(profile.username),
+                self._fetch_remote_rating_history(profile.username),
                 "Codeforces rating history",
             )
 
             remote_contests = self._as_sequence(
-                self.client.fetch_contests(),
+                self._fetch_remote_contests(),
                 "Codeforces contests",
             )
 
@@ -129,12 +138,9 @@ class CodeforcesSyncService(BaseService):
 
                 contests_by_platform_id[str(contest_id)] = contest
 
-            synced_at = datetime.now(timezone.utc)
-
             self._update_profile(
                 profile,
                 remote_profile,
-                synced_at,
             )
 
             # Cache of contests encountered during this sync.
@@ -149,6 +155,7 @@ class CodeforcesSyncService(BaseService):
             problems_created = 0
             contests_created = 0
             submissions_created = 0
+            submissions_skipped = 0
             rating_history_created = 0
             participations_created = 0
 
@@ -161,6 +168,7 @@ class CodeforcesSyncService(BaseService):
                     problem_created,
                     contest_created,
                     submission_created,
+                    submission_skipped,
                 ) = self._sync_submission(
                     profile=profile,
                     submission_data=self._as_mapping(
@@ -174,6 +182,7 @@ class CodeforcesSyncService(BaseService):
                 problems_created += int(problem_created)
                 contests_created += int(contest_created)
                 submissions_created += int(submission_created)
+                submissions_skipped += int(submission_skipped)
 
             # ----------------------------------------------------
             # Synchronize rating history and contest participation
@@ -212,6 +221,9 @@ class CodeforcesSyncService(BaseService):
                 profile.id
             )
 
+            synced_at = datetime.now(timezone.utc)
+            profile.last_synced_at = synced_at
+
             self.db.commit()
 
             return SyncResult(
@@ -220,6 +232,7 @@ class CodeforcesSyncService(BaseService):
                 problems_created=problems_created,
                 contests_created=contests_created,
                 submissions_created=submissions_created,
+                submissions_skipped=submissions_skipped,
                 rating_history_created=rating_history_created,
                 contest_participations_created=participations_created,
                 problems_solved=profile.problems_solved,
@@ -240,12 +253,19 @@ class CodeforcesSyncService(BaseService):
     def _get_codeforces_profile(
         self,
         profile_id: int,
+        user_id: int,
     ) -> PlatformProfile:
         profile = self.platform_profiles.get_by_id(profile_id)
 
         if profile is None:
             raise PlatformProfileNotFoundError(
                 f"Platform profile {profile_id} was not found."
+            )
+
+        if profile.user_id != user_id:
+            raise ProfileAccessDeniedError(
+                "You do not have permission to synchronize "
+                f"platform profile {profile_id}."
             )
 
         if profile.platform != Platform.CODEFORCES:
@@ -255,11 +275,54 @@ class CodeforcesSyncService(BaseService):
 
         return profile
 
+    def _fetch_remote_profile(
+        self,
+        username: str,
+    ) -> Any:
+        return self._call_codeforces_api(
+            self.client.fetch_profile,
+            username,
+        )
+
+    def _fetch_remote_submissions(
+        self,
+        username: str,
+    ) -> Any:
+        return self._call_codeforces_api(
+            self.client.fetch_submissions,
+            username,
+        )
+
+    def _fetch_remote_rating_history(
+        self,
+        username: str,
+    ) -> Any:
+        return self._call_codeforces_api(
+            self.client.fetch_rating_history,
+            username,
+        )
+
+    def _fetch_remote_contests(self) -> Any:
+        return self._call_codeforces_api(
+            self.client.fetch_contests,
+        )
+
+    @staticmethod
+    def _call_codeforces_api(
+        fetch_fn: Any,
+        *args: Any,
+    ) -> Any:
+        try:
+            return fetch_fn(*args)
+        except RuntimeError as exc:
+            raise CodeforcesSyncError(
+                "Codeforces API request failed."
+            ) from exc
+
     def _update_profile(
         self,
         profile: PlatformProfile,
         remote_profile: Mapping[str, Any],
-        synced_at: datetime,
     ) -> None:
         profile.current_rating = self._optional_int(
             remote_profile.get("rating"),
@@ -277,7 +340,18 @@ class CodeforcesSyncService(BaseService):
         )
 
         profile.is_connected = True
-        profile.last_synced_at = synced_at
+
+    def _safe_add_and_flush(self, entity: Any) -> None:
+        """
+        Insert one entity inside a savepoint.
+
+        This lets the sync recover from unique-constraint races
+        without aborting the whole synchronization transaction.
+        """
+
+        with self.db.begin_nested():
+            self.db.add(entity)
+            self.db.flush()
 
     # ============================================================
     # SUBMISSIONS
@@ -289,7 +363,7 @@ class CodeforcesSyncService(BaseService):
         submission_data: Mapping[str, Any],
         contests_by_platform_id: dict[str, Mapping[str, Any]],
         contests_cache: dict[str, Contest],
-    ) -> tuple[bool, bool, bool]:
+    ) -> tuple[bool, bool, bool, bool]:
         """
         Synchronize one submission.
 
@@ -298,6 +372,7 @@ class CodeforcesSyncService(BaseService):
                 problem_created,
                 contest_created,
                 submission_created,
+                submission_skipped,
             )
         """
 
@@ -317,7 +392,7 @@ class CodeforcesSyncService(BaseService):
         )
 
         if existing_submission is not None:
-            return False, False, False
+            return False, False, False, True
 
         # --------------------------------------------------------
         # Problem
@@ -372,12 +447,27 @@ class CodeforcesSyncService(BaseService):
             ),
         )
 
-        self.db.add(submission)
+        try:
+            self._safe_add_and_flush(submission)
+        except IntegrityError:
+            existing_submission = (
+                self.submissions.get_by_platform_submission_id(
+                    profile.id,
+                    platform_submission_id,
+                )
+            )
+            if existing_submission is None:
+                raise CodeforcesSyncError(
+                    "Failed to create submission due to a "
+                    "database conflict."
+                ) from None
+            return False, False, False, True
 
         return (
             problem_created,
             contest_created,
             True,
+            False,
         )
 
     # ============================================================
@@ -434,11 +524,21 @@ class CodeforcesSyncService(BaseService):
             acceptance_rate=None,
         )
 
-        self.db.add(problem)
-
-        # We need problem.id immediately because Submission has
-        # a foreign key to it.
-        self.db.flush()
+        try:
+            self._safe_add_and_flush(problem)
+        except IntegrityError:
+            existing_problem = (
+                self.problems.get_by_platform_problem_id(
+                    Platform.CODEFORCES,
+                    platform_problem_id,
+                )
+            )
+            if existing_problem is None:
+                raise CodeforcesSyncError(
+                    "Failed to create problem due to a "
+                    "database conflict."
+                ) from None
+            return existing_problem, False
 
         return problem, True
 
@@ -529,8 +629,24 @@ class CodeforcesSyncService(BaseService):
             ),
         )
 
-        self.db.add(contest)
-        self.db.flush()
+        try:
+            self._safe_add_and_flush(contest)
+        except IntegrityError:
+            existing_contest = (
+                self.contests.get_by_platform_contest_id(
+                    Platform.CODEFORCES,
+                    platform_contest_id,
+                )
+            )
+            if existing_contest is None:
+                raise CodeforcesSyncError(
+                    "Failed to create contest due to a "
+                    "database conflict."
+                ) from None
+            contests_cache[platform_contest_id] = (
+                existing_contest
+            )
+            return existing_contest, False
 
         contests_cache[platform_contest_id] = contest
 
@@ -589,23 +705,43 @@ class CodeforcesSyncService(BaseService):
             )
         )
 
+        recorded_at = self._utc_datetime(
+            rating_data.get(
+                "ratingUpdateTimeSeconds"
+            ),
+            "rating.ratingUpdateTimeSeconds",
+        )
+
         if existing_rating is None:
-            self.db.add(
-                RatingHistory(
-                    profile_id=profile.id,
-                    contest_id=contest.id,
-                    rating=new_rating,
-                    rating_change=rating_change,
-                    recorded_at=self._utc_datetime(
-                        rating_data.get(
-                            "ratingUpdateTimeSeconds"
-                        ),
-                        "rating.ratingUpdateTimeSeconds",
-                    ),
-                )
+            rating = RatingHistory(
+                profile_id=profile.id,
+                contest_id=contest.id,
+                rating=new_rating,
+                rating_change=rating_change,
+                recorded_at=recorded_at,
             )
 
-            rating_created = True
+            try:
+                self._safe_add_and_flush(rating)
+            except IntegrityError:
+                existing_rating = (
+                    self.rating_history.get_by_profile_contest(
+                        profile.id,
+                        contest.id,
+                    )
+                )
+                if existing_rating is None:
+                    raise CodeforcesSyncError(
+                        "Failed to create rating history due to a "
+                        "database conflict."
+                    ) from None
+            else:
+                rating_created = True
+
+        if existing_rating is not None:
+            existing_rating.rating = new_rating
+            existing_rating.rating_change = rating_change
+            existing_rating.recorded_at = recorded_at
 
         # --------------------------------------------------------
         # Contest participation
@@ -637,7 +773,25 @@ class CodeforcesSyncService(BaseService):
                 penalty=None,
             )
 
-            self.db.add(participation)
+            try:
+                self._safe_add_and_flush(participation)
+            except IntegrityError:
+                participation = (
+                    self.contest_participations.get_profile_contest(
+                        profile.id,
+                        contest.id,
+                    )
+                )
+                if participation is None:
+                    raise CodeforcesSyncError(
+                        "Failed to create contest participation due to a "
+                        "database conflict."
+                    ) from None
+                participation_created = False
+                participation.rank = rank
+                participation.old_rating = old_rating
+                participation.new_rating = new_rating
+                participation.rating_change = rating_change
 
         else:
             # Keep existing participation synchronized.

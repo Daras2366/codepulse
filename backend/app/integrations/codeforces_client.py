@@ -67,6 +67,13 @@ class CodeforcesClient(BasePlatformClient):
         username: str,
         limit: int = 100,
     ) -> list[dict[str, Any]]:
+        """
+        Fetch recent Codeforces submissions for a handle.
+
+        Codeforces returns submissions in descending ID order.
+        This client intentionally synchronizes only the most recent
+        `limit` submissions (default 100) per sync call.
+        """
         return self._get(
             "user.status",
             params={
@@ -88,9 +95,31 @@ class CodeforcesClient(BasePlatformClient):
         )
 
     def fetch_contests(self) -> list[dict[str, Any]]:
-        return self._get(
+        """
+        Fetch contest metadata from both regular and gym contest lists.
+
+        The sync service uses this as a lookup table only; it does not
+        import every returned contest into the database.
+        """
+        regular_contests = self._get(
             "contest.list",
             params={
                 "gym": "false",
             },
         )
+        gym_contests = self._get(
+            "contest.list",
+            params={
+                "gym": "true",
+            },
+        )
+
+        contests_by_id: dict[int, dict[str, Any]] = {}
+
+        for contest in regular_contests:
+            contests_by_id[contest["id"]] = contest
+
+        for contest in gym_contests:
+            contests_by_id.setdefault(contest["id"], contest)
+
+        return list(contests_by_id.values())
