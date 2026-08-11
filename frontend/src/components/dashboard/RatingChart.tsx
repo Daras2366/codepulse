@@ -1,7 +1,6 @@
-import { useRef, useState } from "react";
+import { useRef } from "react";
 import { Download } from "lucide-react";
 import {
-  Brush,
   CartesianGrid,
   Line,
   LineChart,
@@ -12,102 +11,76 @@ import {
   YAxis,
 } from "recharts";
 
-import { ChipToggle, Panel } from "@/components/ui-kit/Panel";
-import { ActionButton, ChartSkeleton, EmptyState } from "@/components/ui-kit/motion";
+import type { DashboardRating } from "@/api/dashboard";
+import { ActionButton, ChartSkeleton, EmptyState, ErrorState } from "@/components/ui-kit/motion";
+import { Panel } from "@/components/ui-kit/Panel";
 import { exportChartAsPng } from "@/lib/export-chart";
-import { platforms, ratingSeries } from "@/lib/mock-data";
-
-const ranges = [
-  { key: "7D", label: "7D", slice: 2 },
-  { key: "30D", label: "30D", slice: 3 },
-  { key: "90D", label: "90D", slice: 4 },
-  { key: "1Y", label: "1Y", slice: 10 },
-  { key: "All", label: "All", slice: 10 },
-];
+import { ratingSeries } from "@/lib/mock-data";
 
 function ChartTooltip({ active, payload, label }: TooltipProps<number, string>) {
   if (!active || !payload?.length) return null;
-  const sorted = [...payload].sort((a, b) => (b.value ?? 0) - (a.value ?? 0));
   return (
     <div className="surface-card px-4 py-3">
       <p className="text-label uppercase text-subtle">{label}</p>
-      <div className="mt-2 space-y-1.5">
-        {sorted.map((p) => (
-          <div key={p.dataKey} className="flex items-center gap-2.5">
-            <span className="h-2 w-2 rounded-full" style={{ background: p.stroke }} />
-            <span className="text-caption text-muted-foreground">{p.name}</span>
-            <span className="text-caption ml-auto font-semibold text-foreground">{p.value}</span>
-          </div>
-        ))}
-      </div>
+      <p className="text-caption mt-2 font-semibold text-foreground">{payload[0]?.value} rating</p>
     </div>
   );
 }
 
-export function RatingChart({ compact = false }: { compact?: boolean }) {
-  const [range, setRange] = useState("1Y");
-  const [active, setActive] = useState<string[]>(platforms.map((p) => p.key));
-  const [loading, setLoading] = useState(false);
-  const [hovered, setHovered] = useState<string | null>(null);
+export function RatingChart({
+  compact = false,
+  rating,
+  isLoading = false,
+  error,
+  onRetry,
+}: {
+  compact?: boolean;
+  rating?: DashboardRating | undefined;
+  isLoading?: boolean;
+  error?: string | undefined;
+  onRetry?: (() => void) | undefined;
+}) {
   const chartRef = useRef<HTMLDivElement | null>(null);
-  const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-  const slice = ranges.find((r) => r.key === range)?.slice ?? 10;
-  const data = ratingSeries.slice(ratingSeries.length - slice);
   const height = compact ? 260 : 360;
-  const shown = platforms.filter((p) => active.includes(p.key));
-
-  function changeRange(key: string) {
-    setRange(key);
-    setLoading(true);
-    if (timer.current) clearTimeout(timer.current);
-    timer.current = setTimeout(() => setLoading(false), 420);
-  }
+  const data = rating
+    ? rating.history.map((item) => ({
+        date: new Intl.DateTimeFormat("en", { month: "short", year: "numeric" }).format(
+          new Date(item.recorded_at),
+        ),
+        rating: item.rating,
+      }))
+    : ratingSeries.map((item) => ({ date: item.month, rating: item.codeforces }));
+  const title = rating ? "Codeforces rating progress" : "Rating progress";
+  const caption = rating
+    ? "Rating changes from your synced Codeforces contests"
+    : "Contest rating across all tracked platforms";
 
   return (
     <Panel
-      title="Rating progress"
-      caption="Contest rating across all tracked platforms"
+      title={title}
+      caption={caption}
       action={
-        <div className="flex flex-wrap items-center gap-2">
-          <ChipToggle
-            options={ranges.map((r) => ({ key: r.key, label: r.label }))}
-            value={[range]}
-            onChange={changeRange}
-          />
-          <ActionButton
-            variant="ghost"
-            className="px-4 py-1.5"
-            aria-label="Export chart as image"
-            onClick={() => exportChartAsPng(chartRef.current, "codepulse-rating-progress")}
-          >
-            <Download className="h-3.5 w-3.5" strokeWidth={1.8} />
-            Export
-          </ActionButton>
-        </div>
+        <ActionButton
+          variant="ghost"
+          className="px-4 py-1.5"
+          aria-label="Export chart as image"
+          onClick={() => exportChartAsPng(chartRef.current, "codepulse-rating-progress")}
+          disabled={isLoading || data.length === 0}
+        >
+          <Download className="h-3.5 w-3.5" strokeWidth={1.8} />
+          Export
+        </ActionButton>
       }
     >
-      <ChipToggle
-        className="mb-6"
-        options={platforms.map((p) => ({ key: p.key, label: p.name }))}
-        value={active}
-        onChange={(key) =>
-          setActive((prev) => (prev.includes(key) ? prev.filter((k) => k !== key) : [...prev, key]))
-        }
-      />
-
-      {loading ? (
+      {isLoading ? (
         <ChartSkeleton height={height} />
-      ) : shown.length === 0 ? (
+      ) : error ? (
+        <ErrorState description={error} onRetry={onRetry} />
+      ) : data.length === 0 ? (
         <div style={{ minHeight: height }} className="flex items-center">
           <EmptyState
-            title="No platforms selected"
-            description="Turn a platform back on above to plot its rating curve."
-            action={
-              <ActionButton onClick={() => setActive(platforms.map((p) => p.key))}>
-                Show all
-              </ActionButton>
-            }
+            title="No rating history yet"
+            description="Join a rated Codeforces contest and sync your profile to see rating progress."
           />
         </div>
       ) : (
@@ -119,7 +92,7 @@ export function RatingChart({ compact = false }: { compact?: boolean }) {
             >
               <CartesianGrid stroke="var(--border)" strokeDasharray="4 6" vertical={false} />
               <XAxis
-                dataKey="month"
+                dataKey="date"
                 tickLine={false}
                 axisLine={false}
                 tick={{ fill: "var(--subtle)", fontSize: 12 }}
@@ -133,32 +106,17 @@ export function RatingChart({ compact = false }: { compact?: boolean }) {
                 domain={["dataMin - 120", "dataMax + 80"]}
               />
               <Tooltip content={<ChartTooltip />} cursor={{ stroke: "var(--border)" }} />
-              {shown.map((p) => (
-                <Line
-                  key={p.key}
-                  type="monotone"
-                  dataKey={p.key}
-                  name={p.name}
-                  stroke={p.stroke}
-                  strokeWidth={hovered === p.key ? 3.5 : 2.5}
-                  strokeOpacity={hovered && hovered !== p.key ? 0.35 : 1}
-                  dot={false}
-                  activeDot={{ r: 5, strokeWidth: 2, stroke: "var(--card)" }}
-                  animationDuration={900}
-                  animationEasing="ease-out"
-                  onMouseEnter={() => setHovered(p.key)}
-                  onMouseLeave={() => setHovered(null)}
-                />
-              ))}
-              {!compact && (
-                <Brush
-                  dataKey="month"
-                  height={26}
-                  travellerWidth={10}
-                  stroke="var(--border)"
-                  fill="var(--muted)"
-                />
-              )}
+              <Line
+                type="monotone"
+                dataKey="rating"
+                name="Codeforces"
+                stroke="var(--pastel-blue)"
+                strokeWidth={2.5}
+                dot={false}
+                activeDot={{ r: 5, strokeWidth: 2, stroke: "var(--card)" }}
+                animationDuration={900}
+                animationEasing="ease-out"
+              />
             </LineChart>
           </ResponsiveContainer>
         </div>

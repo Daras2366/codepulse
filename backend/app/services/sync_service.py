@@ -8,7 +8,10 @@ from sqlalchemy import distinct, func
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from app.integrations.codeforces_client import CodeforcesClient
+from app.integrations.codeforces_client import (
+    CodeforcesClient,
+    CodeforcesUserNotFoundError,
+)
 from app.models.contest import Contest
 from app.models.contest_participation import ContestParticipation
 from app.models.enums import Difficulty, Platform, SubmissionStatus
@@ -40,6 +43,10 @@ class PlatformProfileNotFoundError(CodeforcesSyncError):
 
 class UnsupportedPlatformError(CodeforcesSyncError):
     """Raised when the profile is not a Codeforces profile."""
+
+
+class CodeforcesUsernameNotFoundError(CodeforcesSyncError):
+    """Raised when a connected Codeforces handle no longer exists."""
 
 
 class ProfileAccessDeniedError(CodeforcesSyncError):
@@ -279,10 +286,15 @@ class CodeforcesSyncService(BaseService):
         self,
         username: str,
     ) -> Any:
-        return self._call_codeforces_api(
-            self.client.fetch_profile,
-            username,
-        )
+        try:
+            return self._call_codeforces_api(
+                self.client.fetch_profile,
+                username,
+            )
+        except CodeforcesUserNotFoundError as exc:
+            raise CodeforcesUsernameNotFoundError(
+                f"Codeforces user '{username}' was not found."
+            ) from exc
 
     def _fetch_remote_submissions(
         self,
@@ -314,6 +326,8 @@ class CodeforcesSyncService(BaseService):
     ) -> Any:
         try:
             return fetch_fn(*args)
+        except CodeforcesUserNotFoundError:
+            raise
         except RuntimeError as exc:
             raise CodeforcesSyncError(
                 "Codeforces API request failed."

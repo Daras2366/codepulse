@@ -1,5 +1,7 @@
 import { useMemo, useState } from "react";
 
+import type { DashboardSubmissionActivity } from "@/api/dashboard";
+import { ChartSkeleton, EmptyState, ErrorState } from "@/components/ui-kit/motion";
 import { Panel } from "@/components/ui-kit/Panel";
 import { buildHeatmap } from "@/lib/mock-data";
 
@@ -11,61 +13,115 @@ const levels = [
   "bg-[var(--success)]",
 ];
 
-const months = ["Aug", "Sep", "Oct", "Nov", "Dec", "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul"];
+function levelForCount(count: number, peak: number) {
+  if (count === 0 || peak === 0) return 0;
+  return Math.min(4, Math.max(1, Math.ceil((count / peak) * 4)));
+}
 
-export function Heatmap() {
-  const weeks = useMemo(() => buildHeatmap(), []);
+function buildActivityHeatmap(activity: DashboardSubmissionActivity[]) {
+  const counts = new Map(activity.map((item) => [item.activity_date, item.total_submissions]));
+  const peak = Math.max(...activity.map((item) => item.total_submissions), 0);
+  const today = new Date();
+  const start = new Date(Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), today.getUTCDate()));
+  start.setUTCDate(start.getUTCDate() - 52 * 7 - start.getUTCDay());
+
+  return Array.from({ length: 53 }, (_, week) =>
+    Array.from({ length: 7 }, (_, day) => {
+      const date = new Date(start);
+      date.setUTCDate(start.getUTCDate() + week * 7 + day);
+      const key = date.toISOString().slice(0, 10);
+      const count = date > today ? 0 : (counts.get(key) ?? 0);
+      return {
+        count,
+        level: levelForCount(count, peak),
+        label: date.toLocaleDateString("en-US", {
+          month: "short",
+          day: "numeric",
+          year: "numeric",
+          timeZone: "UTC",
+        }),
+      };
+    }),
+  );
+}
+
+export function Heatmap({
+  activity,
+  isLoading = false,
+  error,
+  onRetry,
+}: {
+  activity?: DashboardSubmissionActivity[] | undefined;
+  isLoading?: boolean;
+  error?: string | undefined;
+  onRetry?: (() => void) | undefined;
+}) {
+  const weeks = useMemo(
+    () => (activity ? buildActivityHeatmap(activity) : buildHeatmap()),
+    [activity],
+  );
   const [hover, setHover] = useState<{ label: string; count: number } | null>(null);
-  const total = weeks.flat().reduce((s, d) => s + d.count, 0);
+  const total = activity
+    ? activity.reduce((sum, item) => sum + item.total_submissions, 0)
+    : weeks.flat().reduce((sum, day) => sum + day.count, 0);
+  const dashboardMode = activity !== undefined || isLoading || error !== undefined;
 
   return (
     <Panel
       title="Submission activity"
-      caption={`${total.toLocaleString()} submissions in the last year`}
+      caption={
+        dashboardMode
+          ? `${total.toLocaleString()} submissions in your synced history`
+          : `${total.toLocaleString()} submissions in the last year`
+      }
       action={
         <div className="flex items-center gap-2">
           <span className="text-label text-subtle">Less</span>
-          {levels.map((l, i) => (
-            <span key={i} className={`h-3 w-3 rounded-[4px] ${l}`} />
+          {levels.map((level, index) => (
+            <span key={index} className={`h-3 w-3 rounded-[4px] ${level}`} />
           ))}
           <span className="text-label text-subtle">More</span>
         </div>
       }
     >
-      <div className="relative">
-        <div className="no-scrollbar overflow-x-auto pb-2">
-          <div className="min-w-[720px]">
-            <div className="mb-2 flex text-label text-subtle">
-              {months.map((m) => (
-                <span key={m} className="flex-1">
-                  {m}
-                </span>
-              ))}
-            </div>
-            <div className="flex gap-[3px]">
-              {weeks.map((week, wi) => (
-                <div key={wi} className="flex flex-col gap-[3px]">
-                  {week.map((day, di) => (
-                    <span
-                      key={di}
-                      onMouseEnter={() => setHover(day)}
-                      onMouseLeave={() => setHover(null)}
-                      className={`h-3 w-3 rounded-[4px] transition-transform duration-150 hover:scale-125 ${levels[day.level]}`}
-                    />
-                  ))}
-                </div>
-              ))}
+      {isLoading ? (
+        <ChartSkeleton height={180} />
+      ) : error ? (
+        <ErrorState description={error} onRetry={onRetry} />
+      ) : activity?.length === 0 ? (
+        <EmptyState
+          title="No submission activity yet"
+          description="Sync your Codeforces profile after submitting a problem to see activity here."
+        />
+      ) : (
+        <div className="relative">
+          <div className="no-scrollbar overflow-x-auto pb-2">
+            <div className="min-w-[720px]">
+              <div className="flex gap-[3px]">
+                {weeks.map((week, weekIndex) => (
+                  <div key={weekIndex} className="flex flex-col gap-[3px]">
+                    {week.map((day, dayIndex) => (
+                      <span
+                        key={dayIndex}
+                        onMouseEnter={() => setHover(day)}
+                        onMouseLeave={() => setHover(null)}
+                        className={`h-3 w-3 rounded-[4px] transition-transform duration-150 hover:scale-125 ${levels[day.level]}`}
+                      />
+                    ))}
+                  </div>
+                ))}
+              </div>
             </div>
           </div>
+          <div className="mt-4 h-6">
+            {hover && (
+              <span className="text-caption rounded-full bg-muted px-3 py-1 text-muted-foreground">
+                {hover.count} submissions · {hover.label}
+              </span>
+            )}
+          </div>
         </div>
-        <div className="mt-4 h-6">
-          {hover && (
-            <span className="text-caption rounded-full bg-muted px-3 py-1 text-muted-foreground">
-              {hover.count} submissions · {hover.label}
-            </span>
-          )}
-        </div>
-      </div>
+      )}
     </Panel>
   );
 }

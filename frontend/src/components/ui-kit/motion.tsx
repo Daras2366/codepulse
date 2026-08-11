@@ -228,7 +228,7 @@ export function ErrorState({
 }: {
   title?: string;
   description?: string;
-  onRetry?: () => void;
+  onRetry?: (() => void) | undefined;
 }) {
   return (
     <div className="flex flex-col items-center justify-center rounded-2xl border border-dashed border-border px-6 py-12 text-center">

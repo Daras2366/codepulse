@@ -8,6 +8,7 @@ from app.schemas.sync import SyncResult
 from app.services.sync_service import (
     CodeforcesSyncError,
     CodeforcesSyncService,
+    CodeforcesUsernameNotFoundError,
     PlatformProfileNotFoundError,
     ProfileAccessDeniedError,
     UnsupportedPlatformError,
@@ -51,6 +52,12 @@ def sync_codeforces(
     except UnsupportedPlatformError as exc:
         raise HTTPException(
             status_code=400,
+            detail=str(exc),
+        ) from exc
+
+    except CodeforcesUsernameNotFoundError as exc:
+        raise HTTPException(
+            status_code=422,
             detail=str(exc),
         ) from exc
 

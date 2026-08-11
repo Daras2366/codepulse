@@ -1,6 +1,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from app.routers import analytics
 from app.routers import dashboard
 from app.routers import users
 from app.routers import auth
@@ -30,6 +31,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+app.include_router(analytics.router)
 app.include_router(problem_router.router)
 app.include_router(platform_profiles.router)
 app.include_router(goals.router)

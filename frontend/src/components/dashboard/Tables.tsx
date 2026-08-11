@@ -1,25 +1,61 @@
 import { Panel, Pill } from "@/components/ui-kit/Panel";
-import { AnimatedCounter, EmptyState } from "@/components/ui-kit/motion";
-import { contests, leaderboard } from "@/lib/mock-data";
+import { AnimatedCounter, EmptyState, ErrorState, ListSkeleton } from "@/components/ui-kit/motion";
+import type { DashboardContests } from "@/api/dashboard";
+import { contests as mockContests, leaderboard } from "@/lib/mock-data";
 import { cn } from "@/lib/utils";
 
-function deltaClass(delta: number) {
+function deltaClass(delta: number | null) {
   return cn(
-    delta > 0 && "text-[var(--success)]",
-    delta < 0 && "text-[var(--danger)]",
-    delta === 0 && "text-muted-foreground",
+    delta !== null && delta > 0 && "text-[var(--success)]",
+    delta !== null && delta < 0 && "text-[var(--danger)]",
+    (delta === null || delta === 0) && "text-muted-foreground",
   );
 }
 
-export function ContestsTable({ limit }: { limit?: number }) {
-  const rows = limit ? contests.slice(0, limit) : contests;
+export function ContestsTable({
+  limit,
+  contests,
+  isLoading = false,
+  error,
+  onRetry,
+}: {
+  limit?: number;
+  contests?: DashboardContests | undefined;
+  isLoading?: boolean;
+  error?: string | undefined;
+  onRetry?: (() => void) | undefined;
+}) {
+  const sourceRows = contests
+    ? contests.contests.map((contest) => ({
+        name: contest.contest_name,
+        platform: "Codeforces",
+        date: new Intl.DateTimeFormat("en", { dateStyle: "medium" }).format(
+          new Date(contest.start_time),
+        ),
+        rank: contest.rank,
+        delta: contest.rating_change,
+        status: contest.rating_change === null ? "Unrated" : "Rated",
+      }))
+    : mockContests;
+  const rows = limit ? sourceRows.slice(0, limit) : sourceRows;
+  const dashboardMode = contests !== undefined || isLoading || error !== undefined;
 
   return (
-    <Panel title="Recent contests" caption="Rated performance history" bodyClassName="md:-mx-2">
-      {rows.length === 0 ? (
+    <Panel
+      title="Recent contests"
+      caption={
+        dashboardMode ? "Your synced Codeforces contest history" : "Rated performance history"
+      }
+      bodyClassName="md:-mx-2"
+    >
+      {isLoading ? (
+        <ListSkeleton rows={limit ?? 4} />
+      ) : error ? (
+        <ErrorState description={error} onRetry={onRetry} />
+      ) : rows.length === 0 ? (
         <EmptyState
           title="No contests yet"
-          description="Enter a rated round on any connected platform and it will show up here within an hour."
+          description="Enter a rated Codeforces round and sync your profile to see it here."
         />
       ) : (
         <>
@@ -38,13 +74,14 @@ export function ContestsTable({ limit }: { limit?: number }) {
                 <dl className="mt-4 grid grid-cols-2 gap-3 border-t border-border pt-3">
                   <div>
                     <dt className="text-label uppercase text-subtle">Rank</dt>
-                    <dd className="text-caption font-semibold">#{c.rank.toLocaleString()}</dd>
+                    <dd className="text-caption font-semibold">
+                      {c.rank === null ? "—" : `#${c.rank.toLocaleString()}`}
+                    </dd>
                   </div>
                   <div className="text-right">
                     <dt className="text-label uppercase text-subtle">Δ Rating</dt>
                     <dd className={cn("text-caption font-semibold", deltaClass(c.delta))}>
-                      {c.delta > 0 ? "+" : ""}
-                      {c.delta}
+                      {c.delta === null ? "—" : `${c.delta > 0 ? "+" : ""}${c.delta}`}
                     </dd>
                   </div>
                 </dl>
@@ -74,7 +111,7 @@ export function ContestsTable({ limit }: { limit?: number }) {
                       {c.date}
                     </td>
                     <td className="text-caption px-4 py-3.5 text-right font-semibold transition-colors group-hover:bg-muted">
-                      #{c.rank.toLocaleString()}
+                      {c.rank === null ? "—" : `#${c.rank.toLocaleString()}`}
                     </td>
                     <td
                       className={cn(
@@ -82,8 +119,7 @@ export function ContestsTable({ limit }: { limit?: number }) {
                         deltaClass(c.delta),
                       )}
                     >
-                      {c.delta > 0 ? "+" : ""}
-                      {c.delta}
+                      {c.delta === null ? "—" : `${c.delta > 0 ? "+" : ""}${c.delta}`}
                     </td>
                     <td className="rounded-r-2xl px-4 py-3.5 text-right transition-colors group-hover:bg-muted">
                       <Pill tone={c.status === "Rated" ? "green" : "neutral"}>{c.status}</Pill>

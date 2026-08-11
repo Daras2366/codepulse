@@ -5,6 +5,14 @@ import httpx
 from app.integrations.base_client import BasePlatformClient
 
 
+class CodeforcesApiError(RuntimeError):
+    """Raised when Codeforces returns an unusable API response."""
+
+
+class CodeforcesUserNotFoundError(CodeforcesApiError):
+    """Raised when a requested Codeforces handle does not exist."""
+
+
 class CodeforcesClient(BasePlatformClient):
     BASE_URL = "https://codeforces.com/api"
 
@@ -26,19 +34,23 @@ class CodeforcesClient(BasePlatformClient):
                 timeout=self.timeout,
             )
             response.raise_for_status()
-        except httpx.HTTPError as exc:
-            raise RuntimeError(
+            data = response.json()
+        except (httpx.HTTPError, ValueError) as exc:
+            raise CodeforcesApiError(
                 f"Codeforces API request failed: {exc}"
             ) from exc
 
-        data = response.json()
+        if not isinstance(data, dict):
+            raise CodeforcesApiError(
+                "Codeforces API returned a malformed response."
+            )
 
         if data.get("status") != "OK":
             comment = data.get(
                 "comment",
                 "Unknown Codeforces API error",
             )
-            raise RuntimeError(
+            raise CodeforcesApiError(
                 f"Codeforces API error: {comment}"
             )
 
@@ -48,15 +60,23 @@ class CodeforcesClient(BasePlatformClient):
         self,
         username: str,
     ) -> dict[str, Any]:
-        users = self._get(
-            "user.info",
-            params={
-                "handles": username,
-            },
-        )
+        try:
+            users = self._get(
+                "user.info",
+                params={
+                    "handles": username,
+                },
+            )
+        except CodeforcesApiError as exc:
+            message = str(exc).lower()
+            if "user with handle" in message and "not found" in message:
+                raise CodeforcesUserNotFoundError(
+                    f"Codeforces user '{username}' not found."
+                ) from exc
+            raise
 
         if not users:
-            raise ValueError(
+            raise CodeforcesUserNotFoundError(
                 f"Codeforces user '{username}' not found."
             )
 

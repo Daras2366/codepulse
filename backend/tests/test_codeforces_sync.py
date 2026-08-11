@@ -1,0 +1,246 @@
+from datetime import datetime, timezone
+from unittest import TestCase
+from unittest.mock import patch
+
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
+from sqlalchemy.pool import StaticPool
+
+import app.models  # noqa: F401 -- imports every mapped model
+from app.integrations.codeforces_client import (
+    CodeforcesApiError,
+    CodeforcesClient,
+    CodeforcesUserNotFoundError,
+)
+from app.models.base import Base
+from app.models.contest import Contest
+from app.models.contest_participation import ContestParticipation
+from app.models.enums import Platform
+from app.models.platform_profile import PlatformProfile
+from app.models.rating_history import RatingHistory
+from app.models.submission import Submission
+from app.models.user import User
+from app.services.sync_service import (
+    CodeforcesSyncError,
+    CodeforcesSyncService,
+    CodeforcesUsernameNotFoundError,
+)
+
+
+class FakeCodeforcesClient:
+    def __init__(self, profile, submissions, ratings, contests):
+        self.profile = profile
+        self.submissions = submissions
+        self.ratings = ratings
+        self.contests = contests
+
+    def fetch_profile(self, username):
+        if isinstance(self.profile, Exception):
+            raise self.profile
+        return self.profile
+
+    def fetch_submissions(self, username):
+        return self.submissions
+
+    def fetch_rating_history(self, username):
+        return self.ratings
+
+    def fetch_contests(self):
+        return self.contests
+
+
+class CodeforcesSyncServiceTests(TestCase):
+    def setUp(self):
+        self.engine = create_engine(
+            "sqlite://",
+            connect_args={"check_same_thread": False},
+            poolclass=StaticPool,
+        )
+        Base.metadata.create_all(self.engine)
+        self.session = sessionmaker(bind=self.engine)()
+        self.user = User(
+            username="sync-user",
+            email="sync@example.com",
+            password_hash="hash",
+        )
+        self.session.add(self.user)
+        self.session.flush()
+        self.profile = PlatformProfile(
+            user_id=self.user.id,
+            platform=Platform.CODEFORCES,
+            username="tourist",
+            current_rating=900,
+            max_rating=900,
+            rank="pupil",
+            problems_solved=7,
+            contests_attended=3,
+        )
+        self.session.add(self.profile)
+        self.session.commit()
+
+    def tearDown(self):
+        self.session.close()
+        Base.metadata.drop_all(self.engine)
+        self.engine.dispose()
+
+    def test_nonexistent_handle_is_a_specific_service_error(self):
+        service = CodeforcesSyncService(
+            self.session,
+            FakeCodeforcesClient(
+                CodeforcesUserNotFoundError("not found"), [], [], []
+            ),
+        )
+
+        with self.assertRaises(CodeforcesUsernameNotFoundError):
+            service.sync_codeforces_profile(self.profile.id, self.user.id)
+
+        self.assertIsNone(
+            self.session.get(PlatformProfile, self.profile.id).last_synced_at
+        )
+
+    def test_malformed_data_after_an_insert_rolls_back_everything(self):
+        valid_submission = {
+            "id": 1,
+            "contestId": 100,
+            "creationTimeSeconds": 1_700_000_000,
+            "programmingLanguage": "GNU C++17",
+            "verdict": "OK",
+            "problem": {
+                "contestId": 100,
+                "index": "A",
+                "name": "Valid problem",
+                "rating": 800,
+            },
+        }
+        malformed_submission = {
+            **valid_submission,
+            "id": 2,
+            "problem": {"contestId": 100, "index": "B"},
+        }
+        service = CodeforcesSyncService(
+            self.session,
+            FakeCodeforcesClient(
+                {"rating": 1500, "maxRating": 1600, "rank": "specialist"},
+                [valid_submission, malformed_submission],
+                [],
+                [self._contest_payload(100)],
+            ),
+        )
+
+        with self.assertRaises(ValueError):
+            service.sync_codeforces_profile(self.profile.id, self.user.id)
+
+        profile = self.session.get(PlatformProfile, self.profile.id)
+        self.assertEqual(profile.current_rating, 900)
+        self.assertEqual(profile.max_rating, 900)
+        self.assertEqual(profile.rank, "pupil")
+        self.assertIsNone(profile.last_synced_at)
+        self.assertEqual(self.session.query(Submission).count(), 0)
+        self.assertEqual(self.session.query(Contest).count(), 0)
+
+    def test_existing_rating_and_participation_are_updated_with_aggregates(self):
+        contest = Contest(
+            platform=Platform.CODEFORCES,
+            platform_contest_id="100",
+            title="Old title",
+            contest_url="https://codeforces.com/contest/100",
+            start_time=datetime(2023, 1, 1, tzinfo=timezone.utc),
+            duration_minutes=120,
+        )
+        self.session.add(contest)
+        self.session.flush()
+        self.session.add_all(
+            [
+                RatingHistory(
+                    profile_id=self.profile.id,
+                    contest_id=contest.id,
+                    rating=1200,
+                    rating_change=100,
+                    recorded_at=datetime(2023, 1, 1, tzinfo=timezone.utc),
+                ),
+                ContestParticipation(
+                    profile_id=self.profile.id,
+                    contest_id=contest.id,
+                    rank=999,
+                    old_rating=1100,
+                    new_rating=1200,
+                    rating_change=100,
+                    solved=0,
+                    penalty=None,
+                ),
+            ]
+        )
+        self.session.commit()
+
+        service = CodeforcesSyncService(
+            self.session,
+            FakeCodeforcesClient(
+                {"rating": 1600, "maxRating": 1700, "rank": "expert"},
+                [],
+                [
+                    {
+                        "contestId": 100,
+                        "oldRating": 1500,
+                        "newRating": 1600,
+                        "rank": 42,
+                        "ratingUpdateTimeSeconds": 1_700_000_000,
+                    }
+                ],
+                [self._contest_payload(100)],
+            ),
+        )
+
+        result = service.sync_codeforces_profile(self.profile.id, self.user.id)
+
+        self.session.refresh(self.profile)
+        rating = self.session.query(RatingHistory).one()
+        participation = self.session.query(ContestParticipation).one()
+        self.assertEqual(result.rating_history_created, 0)
+        self.assertEqual(result.contest_participations_created, 0)
+        self.assertEqual(self.profile.current_rating, 1600)
+        self.assertEqual(self.profile.max_rating, 1700)
+        self.assertEqual(self.profile.rank, "expert")
+        self.assertEqual(self.profile.problems_solved, 0)
+        self.assertEqual(self.profile.contests_attended, 1)
+        self.assertIsNotNone(self.profile.last_synced_at)
+        self.assertEqual(rating.rating, 1600)
+        self.assertEqual(rating.rating_change, 100)
+        self.assertEqual(participation.rank, 42)
+        self.assertEqual(participation.old_rating, 1500)
+        self.assertEqual(participation.new_rating, 1600)
+        self.assertEqual(participation.rating_change, 100)
+
+    def test_api_failure_is_normalized_to_sync_error(self):
+        service = CodeforcesSyncService(
+            self.session,
+            FakeCodeforcesClient(RuntimeError("timeout"), [], [], []),
+        )
+
+        with self.assertRaises(CodeforcesSyncError):
+            service.sync_codeforces_profile(self.profile.id, self.user.id)
+
+    @staticmethod
+    def _contest_payload(contest_id):
+        return {
+            "id": contest_id,
+            "name": "Contest 100",
+            "startTimeSeconds": 1_700_000_000,
+            "durationSeconds": 7_200,
+        }
+
+
+class CodeforcesClientTests(TestCase):
+    def test_non_json_api_response_is_normalized_to_api_error(self):
+        class NonJsonResponse:
+            def raise_for_status(self):
+                return None
+
+            def json(self):
+                raise ValueError("invalid JSON")
+
+        with patch(
+            "app.integrations.codeforces_client.httpx.get",
+            return_value=NonJsonResponse(),
+        ):
+            with self.assertRaises(CodeforcesApiError):
+                CodeforcesClient().fetch_profile("tourist")
