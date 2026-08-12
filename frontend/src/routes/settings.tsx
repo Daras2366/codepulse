@@ -4,6 +4,7 @@ import { AppShell } from "@/components/layout/AppShell";
 import { Skeleton } from "@/components/ui-kit/motion";
 import { Panel } from "@/components/ui-kit/Panel";
 import { usePlatforms } from "@/hooks/usePlatforms";
+import { useUser } from "@/hooks/useUser";
 
 const title = "Settings — CodePulse";
 const description =
@@ -61,7 +62,10 @@ function Toggle({ label, desc, on }: { label: string; desc: string; on?: boolean
 }
 
 function Settings() {
-  const { authenticated, profiles, isLoading } = usePlatforms();
+  const { authenticated, profiles, isLoading: isLoadingProfiles } = usePlatforms();
+  const { user, isLoading: isLoadingUser } = useUser();
+
+  const isLoading = isLoadingProfiles || isLoadingUser;
 
   if (isLoading) {
     return (
@@ -76,16 +80,20 @@ function Settings() {
 
   const codeforcesProfile = profiles.find((p) => p.platform === "codeforces");
 
+  // Build a meaningful account identity from real data.
+  // If signed out or the user fetch failed, show a neutral placeholder.
+  const displayUsername = user?.username ?? (authenticated ? "—" : "Signed out");
+  const displayEmail = user?.email ?? (authenticated ? "—" : "");
+  const displayName = user?.full_name ?? "";
+
   return (
     <AppShell title="Settings" subtitle="Profile, handles and how loud CodePulse should be.">
       <div className="grid gap-6 xl:grid-cols-2">
         <Panel title="Account Profile">
           <div className="space-y-5">
-            <Field
-              label="Account Status"
-              value={authenticated ? "Authenticated User" : "Signed Out"}
-              disabled
-            />
+            <Field label="Username" value={displayUsername} disabled />
+            {displayEmail && <Field label="Email" value={displayEmail} disabled />}
+            {displayName && <Field label="Full name" value={displayName} disabled />}
             <Field
               label="Connected Codeforces Handle"
               value={codeforcesProfile ? `@${codeforcesProfile.username}` : "None"}

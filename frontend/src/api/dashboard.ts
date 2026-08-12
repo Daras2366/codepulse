@@ -127,6 +127,20 @@ export function getDashboardContests(profileId: number) {
   return apiRequest<DashboardContests>(`/dashboard/${profileId}/contests`);
 }
 
+export interface SyncResult {
+  profile_id: number;
+  platform: string;
+  problems_created: number;
+  contests_created: number;
+  submissions_created: number;
+  submissions_skipped: number;
+  rating_history_created: number;
+  contest_participations_created: number;
+  problems_solved: number;
+  contests_attended: number;
+  synced_at: string;
+}
+
 export function syncCodeforcesProfile(profileId: number) {
-  return apiRequest(`/sync/codeforces/${profileId}`, { method: "POST" });
+  return apiRequest<SyncResult>(`/sync/codeforces/${profileId}`, { method: "POST" });
 }

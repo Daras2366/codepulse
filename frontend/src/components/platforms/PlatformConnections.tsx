@@ -2,6 +2,7 @@ import { useState } from "react";
 import { CheckCircle2, Clock3, Lock, RefreshCw, Trophy } from "lucide-react";
 
 import { getDashboardErrorMessage } from "@/api/client";
+import type { SyncResult } from "@/api/dashboard";
 import type { PlatformProfile } from "@/api/platform-profiles";
 import { Panel, Pill } from "@/components/ui-kit/Panel";
 import {
@@ -39,11 +40,15 @@ function ProfileCard({
   onSync,
   isSyncing,
   syncError,
+  syncResult,
+  showSyncResult,
 }: {
   profile: PlatformProfile;
   onSync: (id: number) => void;
   isSyncing: boolean;
   syncError: unknown;
+  syncResult?: SyncResult;
+  showSyncResult: boolean;
 }) {
   const isCodeforces = profile.platform === "codeforces";
   const platformName = isCodeforces ? "Codeforces" : profile.platform;
@@ -119,6 +124,23 @@ function ProfileCard({
         </div>
       </dl>
 
+      {/* Sync success banner */}
+      {showSyncResult && syncResult && !isSyncing && !syncError && (
+        <div className="mt-4 rounded-xl bg-green-soft p-3">
+          <div className="flex items-center gap-2 text-caption font-semibold">
+            <CheckCircle2 className="h-4 w-4 shrink-0 text-[var(--success)]" strokeWidth={1.8} />
+            <span>Sync complete!</span>
+          </div>
+          <p className="text-label mt-1.5 text-muted-foreground">
+            {syncResult.submissions_created} new submission
+            {syncResult.submissions_created === 1 ? "" : "s"} ·{" "}
+            {syncResult.problems_solved.toLocaleString()} problems solved ·{" "}
+            {syncResult.contests_attended} contest
+            {syncResult.contests_attended === 1 ? "" : "s"} attended
+          </p>
+        </div>
+      )}
+
       {syncError ? (
         <div className="mt-4 rounded-xl bg-destructive/10 p-3 text-caption text-destructive">
           {getDashboardErrorMessage(syncError)}
@@ -146,14 +168,26 @@ function ProfileCard({
 }
 
 export function PlatformConnections() {
-  const { authenticated, profiles, isLoading, error, refetch, syncProfile, isSyncing, syncError } =
-    usePlatforms();
+  const {
+    authenticated,
+    profiles,
+    isLoading,
+    error,
+    refetch,
+    syncProfile,
+    isSyncing,
+    syncError,
+    syncResult,
+  } = usePlatforms();
   const [syncingProfileId, setSyncingProfileId] = useState<number | null>(null);
+  const [lastSyncedProfileId, setLastSyncedProfileId] = useState<number | null>(null);
 
   const handleSync = async (profileId: number) => {
     setSyncingProfileId(profileId);
+    setLastSyncedProfileId(null);
     try {
       await syncProfile(profileId);
+      setLastSyncedProfileId(profileId);
     } catch {
       // Error state captured by syncError hook
     } finally {
@@ -208,7 +242,11 @@ export function PlatformConnections() {
               profile={p}
               onSync={handleSync}
               isSyncing={isSyncing && syncingProfileId === p.id}
-              syncError={syncingProfileId === p.id ? syncError : null}
+              syncError={
+                syncingProfileId === p.id || lastSyncedProfileId === p.id ? syncError : null
+              }
+              syncResult={syncResult}
+              showSyncResult={lastSyncedProfileId === p.id}
             />
           ))}
         </div>

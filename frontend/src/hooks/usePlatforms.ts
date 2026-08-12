@@ -1,7 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { hasAccessToken } from "@/api/client";
-import { syncCodeforcesProfile } from "@/api/dashboard";
+import { syncCodeforcesProfile, type SyncResult } from "@/api/dashboard";
 import { getMyPlatformProfiles } from "@/api/platform-profiles";
 
 export const platformQueryKeys = {
@@ -41,5 +41,6 @@ export function usePlatforms() {
     syncProfile: syncMutation.mutateAsync,
     isSyncing: syncMutation.isPending,
     syncError: syncMutation.error,
+    syncResult: syncMutation.data as SyncResult | undefined,
   };
 }
