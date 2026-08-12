@@ -14,6 +14,10 @@ class SyncResult(BaseModel):
     contests_created: int
     submissions_created: int
     submissions_skipped: int
+    # How many submissions were fetched from the remote API during this run.
+    # Equals submissions_created + submissions_skipped (deduplicated by the
+    # platform submission ID idempotency check).
+    submissions_fetched: int = 0
     rating_history_created: int
     contest_participations_created: int
     problems_solved: int

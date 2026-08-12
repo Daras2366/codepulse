@@ -117,6 +117,9 @@ class CodeforcesClient(BasePlatformClient):
         Codeforces returns submissions in descending ID order.
         This client intentionally synchronizes only the most recent
         `limit` submissions (default 100) per sync call.
+
+        Preserved for backward compatibility with existing tests.
+        New code should prefer fetch_submissions_paginated.
         """
         return self._get(
             "user.status",
@@ -126,6 +129,69 @@ class CodeforcesClient(BasePlatformClient):
                 "count": limit,
             },
         )
+
+    def fetch_submissions_paginated(
+        self,
+        username: str,
+        max_count: int = 1000,
+        page_size: int = 100,
+    ) -> list[dict[str, Any]]:
+        """
+        Fetch submissions page-by-page up to *max_count*.
+
+        Codeforces ``user.status`` uses 1-indexed ``from`` offsets and
+        returns up to ``count`` submissions per page, sorted by
+        submission-ID descending (newest first).
+
+        Stopping conditions (whichever comes first):
+          • A page returns fewer items than ``page_size`` — no more data.
+          • The running total of fetched items reaches ``max_count``.
+
+        This keeps HTTP requests bounded and proportional to the actual
+        amount of history that exists, rather than issuing fixed-count
+        requests regardless of reality.
+
+        Returns a flat list with at most *max_count* submissions; order
+        is preserved (newest first) as returned by the API.
+        """
+        if max_count <= 0 or page_size <= 0:
+            return []
+
+        all_submissions: list[dict[str, Any]] = []
+        offset = 1  # Codeforces uses 1-indexed "from"
+
+        while len(all_submissions) < max_count:
+            remaining = max_count - len(all_submissions)
+            fetch = min(page_size, remaining)
+
+            logger.debug(
+                "Fetching submissions page: handle=%s from=%d count=%d",
+                username,
+                offset,
+                fetch,
+            )
+
+            page: list[dict[str, Any]] = self._get(
+                "user.status",
+                params={
+                    "handle": username,
+                    "from": offset,
+                    "count": fetch,
+                },
+            )
+
+            if not page:
+                # API returned an empty page — nothing more to fetch.
+                break
+
+            all_submissions.extend(page)
+            offset += len(page)
+
+            if len(page) < fetch:
+                # Partial page — we have reached the end of the history.
+                break
+
+        return all_submissions
 
     def fetch_rating_history(
         self,

@@ -2,6 +2,7 @@ import { useState } from "react";
 import { createFileRoute } from "@tanstack/react-router";
 import { Plus } from "lucide-react";
 
+import type { GoalProgress } from "@/api/goals";
 import { GoalCard } from "@/components/dashboard/GoalCard";
 import { GoalModal } from "@/components/goals/GoalModal";
 import { AppShell } from "@/components/layout/AppShell";
@@ -34,11 +35,15 @@ function Goals() {
     createGoal,
     isCreating,
     createError,
+    updateGoal,
+    isUpdating,
+    updateError,
     deleteGoal,
     isDeleting,
   } = useGoals();
 
-  const [isModalOpen, setIsModalOpen] = useState(false);
+  const [isCreateOpen, setIsCreateOpen] = useState(false);
+  const [editingGoal, setEditingGoal] = useState<GoalProgress | null>(null);
 
   if (!authenticated) {
     return (
@@ -83,7 +88,7 @@ function Goals() {
             {completedGoals.length} achieved
           </p>
           <button
-            onClick={() => setIsModalOpen(true)}
+            onClick={() => setIsCreateOpen(true)}
             className="inline-flex items-center gap-2 rounded-full bg-primary px-5 py-2.5 text-caption font-semibold text-primary-foreground press"
           >
             <Plus className="h-4 w-4" strokeWidth={1.8} />
@@ -102,6 +107,7 @@ function Goals() {
               <GoalCard
                 key={progress.id}
                 progress={progress}
+                onEdit={(goal) => setEditingGoal(goal)}
                 onDelete={(id) => void deleteGoal(id)}
                 isDeleting={isDeleting}
               />
@@ -109,15 +115,32 @@ function Goals() {
           </div>
         )}
 
+        {/* Create modal */}
         <GoalModal
-          isOpen={isModalOpen}
-          onClose={() => setIsModalOpen(false)}
+          mode="create"
+          isOpen={isCreateOpen}
+          onClose={() => setIsCreateOpen(false)}
           onSubmit={async (data) => {
             await createGoal(data);
           }}
           isSubmitting={isCreating}
           error={createError}
         />
+
+        {/* Edit modal */}
+        {editingGoal && (
+          <GoalModal
+            mode="edit"
+            goal={editingGoal}
+            isOpen={editingGoal !== null}
+            onClose={() => setEditingGoal(null)}
+            onSubmit={async (data) => {
+              await updateGoal({ goalId: editingGoal.id, data });
+            }}
+            isSubmitting={isUpdating}
+            error={updateError}
+          />
+        )}
       </div>
     </AppShell>
   );

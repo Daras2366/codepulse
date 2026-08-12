@@ -15,11 +15,13 @@ import {
   Sun,
   Trophy,
   Medal,
+  User,
   X,
 } from "lucide-react";
 import { useState, type ReactNode } from "react";
 
 import { useTheme } from "@/hooks/use-theme";
+import { useUser } from "@/hooks/useUser";
 import { cn } from "@/lib/utils";
 
 const nav = [
@@ -33,6 +35,31 @@ const nav = [
   { to: "/ai-coach", label: "AI Coach", icon: Bot },
   { to: "/settings", label: "Settings", icon: Settings },
 ] as const;
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+/** Derive initials from a username or full_name (max 2 chars, uppercase). */
+function deriveInitials(username: string | undefined, fullName: string | null | undefined): string {
+  // Prefer full_name initials (e.g. "Jane Doe" → "JD")
+  if (fullName) {
+    const parts = fullName.trim().split(/\s+/);
+    if (parts.length >= 2) {
+      return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
+    }
+    return fullName.slice(0, 2).toUpperCase();
+  }
+  // Fall back to first two chars of username
+  if (username) {
+    return username.slice(0, 2).toUpperCase();
+  }
+  return "?";
+}
+
+// ---------------------------------------------------------------------------
+// Theme toggle
+// ---------------------------------------------------------------------------
 
 function ThemeToggle({
   dark,
@@ -64,6 +91,10 @@ function ThemeToggle({
   );
 }
 
+// ---------------------------------------------------------------------------
+// Sidebar inner
+// ---------------------------------------------------------------------------
+
 function SidebarInner({
   collapsed,
   dark,
@@ -76,6 +107,11 @@ function SidebarInner({
   onNavigate?: () => void;
 }) {
   const pathname = useRouterState({ select: (s) => s.location.pathname });
+  const { user, authenticated } = useUser();
+
+  const initials = authenticated && user ? deriveInitials(user.username, user.full_name) : "?";
+  const displayName = authenticated && user ? user.username : null;
+  const displaySub = authenticated && user ? user.email : null;
 
   return (
     <div className="flex h-full flex-col bg-sidebar px-4 py-6 text-sidebar-foreground">
@@ -116,15 +152,34 @@ function SidebarInner({
         })}
       </nav>
 
+      {/* User identity footer */}
       <div className="mt-6 border-t border-sidebar-border pt-4">
         <div className={cn("flex items-center gap-3", collapsed && "flex-col gap-3")}>
-          <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-pink text-caption font-semibold text-[#111111]">
-            DU
+          <span
+            className={cn(
+              "flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-caption font-semibold text-[#111111]",
+              authenticated ? "bg-pink" : "bg-muted text-muted-foreground",
+            )}
+            aria-label={authenticated ? `Signed in as ${displayName ?? ""}` : "Not signed in"}
+          >
+            {authenticated ? (
+              initials
+            ) : (
+              <User className="h-4 w-4 text-muted-foreground" strokeWidth={1.6} />
+            )}
           </span>
           {!collapsed && (
             <div className="min-w-0 flex-1">
-              <p className="truncate text-caption font-semibold">Demo User</p>
-              <p className="truncate text-label text-sidebar-muted">Sample profile</p>
+              {authenticated && displayName ? (
+                <>
+                  <p className="truncate text-caption font-semibold">{displayName}</p>
+                  {displaySub && (
+                    <p className="truncate text-label text-sidebar-muted">{displaySub}</p>
+                  )}
+                </>
+              ) : (
+                <p className="truncate text-caption text-sidebar-muted">Not signed in</p>
+              )}
             </div>
           )}
           <ThemeToggle dark={dark} onToggle={onToggleTheme} tone="sidebar" />
@@ -133,6 +188,10 @@ function SidebarInner({
     </div>
   );
 }
+
+// ---------------------------------------------------------------------------
+// AppShell
+// ---------------------------------------------------------------------------
 
 export function AppShell({
   title,
@@ -148,6 +207,9 @@ export function AppShell({
   const [collapsed, setCollapsed] = useState(false);
   const [mobileOpen, setMobileOpen] = useState(false);
   const dark = theme === "dark";
+
+  const { user, authenticated } = useUser();
+  const initials = authenticated && user ? deriveInitials(user.username, user.full_name) : "?";
 
   return (
     <div className="flex min-h-screen w-full bg-background">
@@ -239,8 +301,21 @@ export function AppShell({
                 <span className="absolute top-2 right-2.5 h-1.5 w-1.5 rounded-full bg-danger" />
               </button>
               <ThemeToggle dark={dark} onToggle={toggle} />
-              <span className="flex h-9 w-9 items-center justify-center rounded-full bg-violet text-caption font-semibold text-[#111111]">
-                DU
+              {/* Header avatar — mirrors sidebar identity */}
+              <span
+                className={cn(
+                  "flex h-9 w-9 items-center justify-center rounded-full text-caption font-semibold text-[#111111]",
+                  authenticated ? "bg-violet" : "bg-muted",
+                )}
+                aria-label={
+                  authenticated ? `Signed in as ${user?.username ?? ""}` : "Not signed in"
+                }
+              >
+                {authenticated ? (
+                  initials
+                ) : (
+                  <User className="h-4 w-4 text-muted-foreground" strokeWidth={1.6} />
+                )}
               </span>
             </div>
           </div>

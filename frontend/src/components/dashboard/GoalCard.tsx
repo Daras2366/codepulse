@@ -1,4 +1,4 @@
-import { Trash2 } from "lucide-react";
+import { Pencil, Trash2 } from "lucide-react";
 
 import type { GoalProgress } from "@/api/goals";
 import { ActionButton, AnimatedBar, AnimatedCounter } from "@/components/ui-kit/motion";
@@ -10,10 +10,12 @@ export function ProgressBar({ value, color }: { value: number; color: string }) 
 
 export function GoalCard({
   progress,
+  onEdit,
   onDelete,
   isDeleting,
 }: {
   progress: GoalProgress;
+  onEdit?: (goal: GoalProgress) => void;
   onDelete?: (id: number) => void;
   isDeleting?: boolean;
 }) {
@@ -21,6 +23,13 @@ export function GoalCard({
   const isAchieved = progress.is_achieved || pct >= 100;
   const tint = isAchieved ? "bg-green-soft" : "bg-card";
   const bar = isAchieved ? "var(--success)" : "var(--pastel-blue)";
+
+  const handleDelete = () => {
+    if (!onDelete) return;
+    if (window.confirm(`Delete goal "${progress.title}"? This cannot be undone.`)) {
+      onDelete(progress.id);
+    }
+  };
 
   return (
     <article
@@ -52,22 +61,39 @@ export function GoalCard({
           <p className="text-label text-subtle">
             {progress.calculated_progress.toLocaleString()} of{" "}
             {progress.target_value.toLocaleString()}
+            {progress.remaining > 0 && (
+              <span className="ml-1 text-subtle/70">· {progress.remaining} remaining</span>
+            )}
           </p>
-
-          {onDelete && (
-            <ActionButton
-              variant="quiet"
-              className="h-7 w-7 p-0 opacity-0 transition-opacity group-hover:opacity-100"
-              aria-label="Delete goal"
-              disabled={isDeleting}
-              onClick={() => onDelete(progress.id)}
-            >
-              <Trash2
-                className="h-3.5 w-3.5 text-muted-foreground hover:text-destructive"
-                strokeWidth={1.8}
-              />
-            </ActionButton>
-          )}
+          <div className="flex items-center gap-1 opacity-0 transition-opacity group-hover:opacity-100">
+            {onEdit && (
+              <ActionButton
+                variant="quiet"
+                className="h-7 w-7 p-0"
+                aria-label="Edit goal"
+                onClick={() => onEdit(progress)}
+              >
+                <Pencil
+                  className="h-3.5 w-3.5 text-muted-foreground hover:text-foreground"
+                  strokeWidth={1.8}
+                />
+              </ActionButton>
+            )}
+            {onDelete && (
+              <ActionButton
+                variant="quiet"
+                className="h-7 w-7 p-0"
+                aria-label="Delete goal"
+                disabled={isDeleting}
+                onClick={handleDelete}
+              >
+                <Trash2
+                  className="h-3.5 w-3.5 text-muted-foreground hover:text-destructive"
+                  strokeWidth={1.8}
+                />
+              </ActionButton>
+            )}
+          </div>
         </div>
       </div>
     </article>

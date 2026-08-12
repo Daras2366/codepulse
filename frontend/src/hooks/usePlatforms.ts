@@ -1,3 +1,4 @@
+import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { hasAccessToken } from "@/api/client";
@@ -10,7 +11,18 @@ export const platformQueryKeys = {
 
 export function usePlatforms() {
   const queryClient = useQueryClient();
-  const authenticated = hasAccessToken();
+  const [authenticated, setAuthenticated] = useState(hasAccessToken);
+
+  useEffect(() => {
+    setAuthenticated(hasAccessToken());
+    const handleStorageChange = () => setAuthenticated(hasAccessToken());
+    window.addEventListener("storage", handleStorageChange);
+    window.addEventListener("codepulse-auth-change", handleStorageChange);
+    return () => {
+      window.removeEventListener("storage", handleStorageChange);
+      window.removeEventListener("codepulse-auth-change", handleStorageChange);
+    };
+  }, []);
 
   const profilesQuery = useQuery({
     queryKey: platformQueryKeys.profiles,

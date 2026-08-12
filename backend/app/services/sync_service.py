@@ -9,6 +9,7 @@ from sqlalchemy import distinct, func
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from app.core.config import settings
 from app.integrations.codeforces_client import (
     CodeforcesClient,
     CodeforcesUserNotFoundError,
@@ -166,6 +167,7 @@ class CodeforcesSyncService(BaseService):
             contests_created = 0
             submissions_created = 0
             submissions_skipped = 0
+            submissions_fetched = len(remote_submissions)
             rating_history_created = 0
             participations_created = 0
 
@@ -243,6 +245,7 @@ class CodeforcesSyncService(BaseService):
                 contests_created=contests_created,
                 submissions_created=submissions_created,
                 submissions_skipped=submissions_skipped,
+                submissions_fetched=submissions_fetched,
                 rating_history_created=rating_history_created,
                 contest_participations_created=participations_created,
                 problems_solved=profile.problems_solved,
@@ -303,9 +306,17 @@ class CodeforcesSyncService(BaseService):
         self,
         username: str,
     ) -> Any:
+        """
+        Fetch submissions using the paginated strategy.
+
+        The limit and page-size are read from settings so they can be
+        tuned via environment variables without a code change.
+        """
         return self._call_codeforces_api(
-            self.client.fetch_submissions,
+            self.client.fetch_submissions_paginated,
             username,
+            settings.CODEFORCES_SUBMISSION_LIMIT,
+            settings.CODEFORCES_SUBMISSION_PAGE_SIZE,
         )
 
     def _fetch_remote_rating_history(
@@ -447,7 +458,8 @@ class CodeforcesSyncService(BaseService):
                 contests_cache,
             )
 
-            contest_id = contest.id
+            if contest is not None:
+                contest_id = contest.id
 
         # --------------------------------------------------------
         # Submission
@@ -575,7 +587,7 @@ class CodeforcesSyncService(BaseService):
         external_contest_id: Any,
         contests_by_platform_id: dict[str, Mapping[str, Any]],
         contests_cache: dict[str, Contest],
-    ) -> tuple[Contest, bool]:
+    ) -> tuple[Contest | None, bool]:
         """
         Get or create a contest referenced by submissions/rating history.
 
@@ -586,6 +598,10 @@ class CodeforcesSyncService(BaseService):
         3. Preloaded contest.list metadata mapping
 
         Only contests referenced by this user's data are inserted.
+
+        Returns None (with created=False) when the contest is not in the
+        regular contest metadata. This handles submissions from gym contests
+        or practice sessions which are not fetched by contest.list?gym=false.
         """
 
         contest_id = self._required_int(
@@ -623,11 +639,14 @@ class CodeforcesSyncService(BaseService):
         )
 
         if remote_contest is None:
-            raise CodeforcesSyncError(
-                "Contest metadata for Codeforces contest "
-                f"{platform_contest_id} was not returned by "
-                "contest.list."
+            # Contest not in regular contest metadata — likely a gym contest.
+            # Log for diagnostic purposes but do not fail the sync.
+            logger.info(
+                "Skipping contest association for contest %s "
+                "(not in contest.list, likely gym/practice)",
+                platform_contest_id,
             )
+            return None, False
 
         contest = Contest(
             platform_contest_id=platform_contest_id,

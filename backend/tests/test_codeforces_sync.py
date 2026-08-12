@@ -42,6 +42,10 @@ class FakeCodeforcesClient:
     def fetch_submissions(self, username):
         return self.submissions
 
+    def fetch_submissions_paginated(self, username, max_count=1000, page_size=100):
+        """Delegates to the static submissions list for backward-compatible tests."""
+        return self.submissions[:max_count]
+
     def fetch_rating_history(self, username):
         return self.ratings
 
@@ -368,6 +372,9 @@ class CodeforcesClientTests(TestCase):
                 def fetch_submissions(self, username):
                     return []
 
+                def fetch_submissions_paginated(self, username, max_count=1000, page_size=100):
+                    return []
+
                 def fetch_rating_history(self, username):
                     return []
 
@@ -388,3 +395,101 @@ class CodeforcesClientTests(TestCase):
             session.close()
             Base.metadata.drop_all(engine)
             engine.dispose()
+
+    def test_gym_contest_submission_skips_contest_association(self):
+        """
+        Regression test: submissions referencing gym contests (not in
+        contest.list?gym=false) should be imported with contest_id=None
+        rather than failing with a 502 Bad Gateway.
+
+        Before the fix, sync raised CodeforcesSyncError:
+        'Contest metadata for Codeforces contest 104857 was not returned by contest.list.'
+
+        After the fix, the submission is imported successfully with
+        contest_id=None and the sync completes.
+        """
+        from sqlalchemy import create_engine
+        from sqlalchemy.orm import sessionmaker
+        from sqlalchemy.pool import StaticPool
+
+        import app.models  # noqa: F401
+        from app.models.base import Base
+        from app.models.enums import Platform
+        from app.models.platform_profile import PlatformProfile
+        from app.models.submission import Submission
+        from app.models.user import User
+        from app.services.sync_service import CodeforcesSyncService
+
+        engine = create_engine(
+            "sqlite://",
+            connect_args={"check_same_thread": False},
+            poolclass=StaticPool,
+        )
+        Base.metadata.create_all(engine)
+        session = sessionmaker(bind=engine)()
+
+        try:
+            user = User(username="u", email="u@x.com", password_hash="h")
+            session.add(user)
+            session.flush()
+            profile = PlatformProfile(
+                user_id=user.id,
+                platform=Platform.CODEFORCES,
+                username="handle",
+            )
+            session.add(profile)
+            session.commit()
+
+            # Submission from gym contest 104857 (not in regular contest list)
+            gym_submission = {
+                "id": 332146912,
+                "contestId": 104857,  # Gym contest ID
+                "creationTimeSeconds": 1754162939,
+                "programmingLanguage": "C++23",
+                "verdict": "OK",
+                "problem": {
+                    "contestId": 104857,
+                    "index": "J",
+                    "name": "Takeout Delivering",
+                },
+            }
+
+            class GymContestClient:
+                def fetch_profile(self, username):
+                    return {"rating": 1500, "maxRating": 1600, "rank": "specialist"}
+
+                def fetch_submissions_paginated(self, username, max_count=1000, page_size=100):
+                    return [gym_submission]
+
+                def fetch_rating_history(self, username):
+                    return []
+
+                def fetch_contests(self):
+                    # Returns empty — gym contest 104857 is not in gym=false list
+                    return []
+
+            service = CodeforcesSyncService(session, GymContestClient())
+
+            # Before fix: raises CodeforcesSyncError
+            # After fix: succeeds
+            result = service.sync_codeforces_profile(profile.id, user.id)
+
+            # Verify sync succeeded
+            self.assertEqual(result.submissions_created, 1)
+            self.assertEqual(result.submissions_fetched, 1)
+            self.assertEqual(result.problems_created, 1)
+            self.assertEqual(result.contests_created, 0)
+
+            # Verify submission was created with contest_id=None
+            submission = session.query(Submission).one()
+            self.assertIsNone(
+                submission.contest_id,
+                "Gym contest submission should have contest_id=None"
+            )
+            self.assertEqual(submission.platform_submission_id, "332146912")
+
+        finally:
+            session.close()
+            Base.metadata.drop_all(engine)
+            engine.dispose()
+

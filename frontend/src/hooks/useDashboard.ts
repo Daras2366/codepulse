@@ -1,3 +1,4 @@
+import { useEffect, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { hasAccessToken } from "@/api/client";
@@ -21,7 +22,25 @@ export const dashboardQueryKeys = {
 
 export function useDashboard() {
   const queryClient = useQueryClient();
-  const authenticated = hasAccessToken();
+  const [authenticated, setAuthenticated] = useState(hasAccessToken);
+
+  useEffect(() => {
+    // Re-check authentication on mount and when storage changes
+    setAuthenticated(hasAccessToken());
+
+    const handleStorageChange = () => {
+      setAuthenticated(hasAccessToken());
+    };
+
+    window.addEventListener("storage", handleStorageChange);
+    window.addEventListener("codepulse-auth-change", handleStorageChange);
+
+    return () => {
+      window.removeEventListener("storage", handleStorageChange);
+      window.removeEventListener("codepulse-auth-change", handleStorageChange);
+    };
+  }, []);
+
   const profiles = useQuery({
     queryKey: dashboardQueryKeys.profile,
     queryFn: getMyPlatformProfiles,

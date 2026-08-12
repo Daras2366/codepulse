@@ -1,27 +1,72 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { X } from "lucide-react";
 
 import { getDashboardErrorMessage } from "@/api/client";
-import type { GoalCreate, GoalType } from "@/api/goals";
+import type { GoalCreate, GoalProgress, GoalType, GoalUpdate } from "@/api/goals";
 import { ActionButton } from "@/components/ui-kit/motion";
 
-export function GoalModal({
-  isOpen,
-  onClose,
-  onSubmit,
-  isSubmitting,
-  error,
-}: {
+// ---------------------------------------------------------------------------
+// Types
+// ---------------------------------------------------------------------------
+
+interface CreateProps {
+  mode: "create";
   isOpen: boolean;
   onClose: () => void;
   onSubmit: (data: GoalCreate) => Promise<void>;
   isSubmitting: boolean;
   error: unknown;
-}) {
-  const [title, setTitle] = useState("");
-  const [description, setDescription] = useState("");
-  const [goalType, setGoalType] = useState<GoalType>("weekly");
-  const [targetValue, setTargetValue] = useState("10");
+}
+
+interface EditProps {
+  mode: "edit";
+  goal: GoalProgress;
+  isOpen: boolean;
+  onClose: () => void;
+  onSubmit: (data: GoalUpdate) => Promise<void>;
+  isSubmitting: boolean;
+  error: unknown;
+}
+
+type GoalModalProps = CreateProps | EditProps;
+
+// ---------------------------------------------------------------------------
+// Component
+// ---------------------------------------------------------------------------
+
+export function GoalModal(props: GoalModalProps) {
+  const { isOpen, onClose, isSubmitting, error } = props;
+  const isEditing = props.mode === "edit";
+
+  const initial = isEditing
+    ? {
+        title: props.goal.title,
+        description: props.goal.description ?? "",
+        goalType: props.goal.goal_type as GoalType,
+        targetValue: String(props.goal.target_value),
+      }
+    : { title: "", description: "", goalType: "weekly" as GoalType, targetValue: "10" };
+
+  const [title, setTitle] = useState(initial.title);
+  const [description, setDescription] = useState(initial.description);
+  const [goalType, setGoalType] = useState<GoalType>(initial.goalType);
+  const [targetValue, setTargetValue] = useState(initial.targetValue);
+
+  // Re-sync form when the goal being edited changes
+  useEffect(() => {
+    if (isEditing) {
+      setTitle(props.goal.title);
+      setDescription(props.goal.description ?? "");
+      setGoalType(props.goal.goal_type as GoalType);
+      setTargetValue(String(props.goal.target_value));
+    } else {
+      setTitle("");
+      setDescription("");
+      setGoalType("weekly");
+      setTargetValue("10");
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isOpen]);
 
   if (!isOpen) return null;
 
@@ -31,18 +76,24 @@ export function GoalModal({
     if (!title.trim() || isNaN(target) || target <= 0) return;
 
     try {
-      await onSubmit({
-        title: title.trim(),
-        description: description.trim() || undefined,
-        goal_type: goalType,
-        target_value: target,
-      });
-      setTitle("");
-      setDescription("");
-      setTargetValue("10");
+      if (isEditing) {
+        await (props as EditProps).onSubmit({
+          title: title.trim(),
+          description: description.trim() || undefined,
+          goal_type: goalType,
+          target_value: target,
+        });
+      } else {
+        await (props as CreateProps).onSubmit({
+          title: title.trim(),
+          description: description.trim() || undefined,
+          goal_type: goalType,
+          target_value: target,
+        });
+      }
       onClose();
     } catch {
-      // Error handles in hook
+      // Error handled in hook
     }
   };
 
@@ -50,7 +101,7 @@ export function GoalModal({
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4 backdrop-blur-sm">
       <div className="surface-card w-full max-w-md p-6">
         <div className="flex items-center justify-between border-b border-border pb-4">
-          <h2 className="text-h3 font-semibold">Create new goal</h2>
+          <h2 className="text-h3 font-semibold">{isEditing ? "Edit goal" : "Create new goal"}</h2>
           <button
             onClick={onClose}
             className="rounded-full p-1 text-muted-foreground hover:bg-muted"
@@ -120,7 +171,13 @@ export function GoalModal({
               Cancel
             </ActionButton>
             <ActionButton type="submit" disabled={isSubmitting}>
-              {isSubmitting ? "Creating…" : "Create goal"}
+              {isSubmitting
+                ? isEditing
+                  ? "Saving…"
+                  : "Creating…"
+                : isEditing
+                  ? "Save changes"
+                  : "Create goal"}
             </ActionButton>
           </div>
         </form>

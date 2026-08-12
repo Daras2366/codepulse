@@ -1,3 +1,4 @@
+import { useEffect, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 
 import { hasAccessToken } from "@/api/client";
@@ -8,7 +9,27 @@ export const userQueryKeys = {
 };
 
 export function useUser() {
-  const authenticated = hasAccessToken();
+  const [authenticated, setAuthenticated] = useState(hasAccessToken);
+
+  useEffect(() => {
+    // Re-check authentication on mount and when storage changes
+    setAuthenticated(hasAccessToken());
+
+    const handleStorageChange = () => {
+      setAuthenticated(hasAccessToken());
+    };
+
+    // Listen for storage events from other tabs/windows
+    window.addEventListener("storage", handleStorageChange);
+
+    // Custom event for same-window localStorage changes
+    window.addEventListener("codepulse-auth-change", handleStorageChange);
+
+    return () => {
+      window.removeEventListener("storage", handleStorageChange);
+      window.removeEventListener("codepulse-auth-change", handleStorageChange);
+    };
+  }, []);
 
   const query = useQuery({
     queryKey: userQueryKeys.me,
