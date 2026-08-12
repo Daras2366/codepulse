@@ -1,28 +1,54 @@
 import { useState } from "react";
-import { CheckCircle2, Clock3, Link2Off, Lock, RefreshCw, Trophy } from "lucide-react";
+import { CheckCircle2, Clock3, Lock, RefreshCw, Trophy } from "lucide-react";
 
+import { getDashboardErrorMessage } from "@/api/client";
+import type { PlatformProfile } from "@/api/platform-profiles";
 import { Panel, Pill } from "@/components/ui-kit/Panel";
-import { ActionButton, AnimatedCounter, Skeleton } from "@/components/ui-kit/motion";
-import { comingSoonPlatforms, platformAccounts, platforms } from "@/lib/mock-data";
+import {
+  ActionButton,
+  AnimatedCounter,
+  EmptyState,
+  ErrorState,
+  Skeleton,
+} from "@/components/ui-kit/motion";
+import { usePlatforms } from "@/hooks/usePlatforms";
 import { cn } from "@/lib/utils";
 
-type Status = "connected" | "syncing" | "disconnected";
+const comingSoonPlatforms = [
+  { name: "LeetCode", short: "LC", tint: "bg-yellow-soft", note: "API sync integration planned" },
+  { name: "CodeChef", short: "CC", tint: "bg-pink-soft", note: "API sync integration planned" },
+  { name: "AtCoder", short: "AC", tint: "bg-violet-soft", note: "API sync integration planned" },
+];
 
-function PlatformCard({ platform }: { platform: (typeof platforms)[number] }) {
-  const account = platformAccounts[platform.key];
-  const [status, setStatus] = useState<Status>("connected");
-  const [lastSync, setLastSync] = useState(account.lastSync);
+function formatLastSync(dateString: string | null) {
+  if (!dateString) return "Never";
+  const date = new Date(dateString);
+  const now = new Date();
+  const diffMs = now.getTime() - date.getTime();
+  const diffMins = Math.floor(diffMs / (1000 * 60));
 
-  function sync() {
-    setStatus("syncing");
-    setTimeout(() => {
-      setLastSync("just now");
-      setStatus("connected");
-    }, 1400);
-  }
+  if (diffMins < 1) return "Just now";
+  if (diffMins < 60) return `${diffMins}m ago`;
+  const diffHours = Math.floor(diffMins / 60);
+  if (diffHours < 24) return `${diffHours}h ago`;
+  return new Intl.DateTimeFormat("en", { month: "short", day: "numeric" }).format(date);
+}
 
-  const syncing = status === "syncing";
-  const disconnected = status === "disconnected";
+function ProfileCard({
+  profile,
+  onSync,
+  isSyncing,
+  syncError,
+}: {
+  profile: PlatformProfile;
+  onSync: (id: number) => void;
+  isSyncing: boolean;
+  syncError: unknown;
+}) {
+  const isCodeforces = profile.platform === "codeforces";
+  const platformName = isCodeforces ? "Codeforces" : profile.platform;
+  const platformShort = isCodeforces ? "CF" : profile.platform.slice(0, 2).toUpperCase();
+  const tint = isCodeforces ? "bg-blue-soft" : "bg-muted";
 
   return (
     <article className="surface-card lift group flex flex-col p-6">
@@ -31,30 +57,29 @@ function PlatformCard({ platform }: { platform: (typeof platforms)[number] }) {
           <span
             className={cn(
               "flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl text-caption font-bold transition-transform duration-300 group-hover:scale-105",
-              platform.tint,
-              disconnected && "opacity-50",
+              tint,
             )}
             aria-hidden
           >
-            {platform.short}
+            {platformShort}
           </span>
           <div className="min-w-0">
-            <p className="text-card-title truncate">{platform.name}</p>
-            <p className="text-label truncate text-subtle">@{account.username}</p>
+            <p className="text-card-title truncate">{platformName}</p>
+            <p className="text-label truncate text-subtle">@{profile.username}</p>
           </div>
         </div>
-        {disconnected ? (
-          <Pill tone="neutral">Disconnected</Pill>
-        ) : syncing ? (
+        {isSyncing ? (
           <Pill tone="blue">
             <RefreshCw className="h-3.5 w-3.5 animate-spin" strokeWidth={1.8} />
             Syncing
           </Pill>
-        ) : (
+        ) : profile.is_connected ? (
           <Pill tone="green">
             <CheckCircle2 className="h-3.5 w-3.5" strokeWidth={1.8} />
             Connected
           </Pill>
+        ) : (
+          <Pill tone="neutral">Disconnected</Pill>
         )}
       </div>
 
@@ -62,71 +87,58 @@ function PlatformCard({ platform }: { platform: (typeof platforms)[number] }) {
         <div>
           <dt className="text-label uppercase text-subtle">Contest rating</dt>
           <dd className="mt-0.5 text-h3">
-            {syncing ? (
-              <Skeleton className="mt-1 h-6 w-20" />
-            ) : disconnected ? (
-              <span className="text-muted-foreground">—</span>
+            {profile.current_rating === null ? (
+              <span className="text-muted-foreground">Unrated</span>
             ) : (
-              <AnimatedCounter value={platform.rating} />
+              <AnimatedCounter value={profile.current_rating} />
             )}
           </dd>
         </div>
         <div>
           <dt className="text-label uppercase text-subtle">Peak rating</dt>
           <dd className="mt-0.5 text-h3">
-            {syncing ? (
-              <Skeleton className="mt-1 h-6 w-20" />
-            ) : disconnected ? (
+            {profile.max_rating === null ? (
               <span className="text-muted-foreground">—</span>
             ) : (
-              <AnimatedCounter value={platform.peak} />
+              <AnimatedCounter value={profile.max_rating} />
             )}
           </dd>
         </div>
         <div>
           <dt className="text-label uppercase text-subtle">Problems solved</dt>
           <dd className="text-caption mt-0.5 font-semibold">
-            {syncing ? (
-              <Skeleton className="mt-1 h-4 w-16" />
-            ) : disconnected ? (
-              "—"
-            ) : (
-              platform.solved.toLocaleString()
-            )}
+            {profile.problems_solved.toLocaleString()}
           </dd>
         </div>
         <div>
           <dt className="text-label uppercase text-subtle">Last sync</dt>
           <dd className="text-caption mt-0.5 flex items-center gap-1.5 font-semibold text-muted-foreground">
             <Clock3 className="h-3.5 w-3.5 shrink-0 text-subtle" strokeWidth={1.6} />
-            {disconnected ? "Never" : syncing ? "Syncing…" : lastSync}
+            {isSyncing ? "Syncing…" : formatLastSync(profile.last_synced_at)}
           </dd>
         </div>
       </dl>
 
+      {syncError ? (
+        <div className="mt-4 rounded-xl bg-destructive/10 p-3 text-caption text-destructive">
+          {getDashboardErrorMessage(syncError)}
+        </div>
+      ) : null}
+
       <div className="mt-6 flex flex-wrap gap-2.5">
-        {disconnected ? (
-          <ActionButton className="px-4 py-2" onClick={() => setStatus("connected")}>
-            Reconnect
+        {isCodeforces && (
+          <ActionButton
+            variant="ghost"
+            className="px-4 py-2"
+            disabled={isSyncing}
+            onClick={() => onSync(profile.id)}
+          >
+            <RefreshCw
+              className={cn("h-3.5 w-3.5", isSyncing && "animate-spin")}
+              strokeWidth={1.8}
+            />
+            {isSyncing ? "Syncing" : "Sync now"}
           </ActionButton>
-        ) : (
-          <>
-            <ActionButton variant="ghost" className="px-4 py-2" disabled={syncing} onClick={sync}>
-              <RefreshCw
-                className={cn("h-3.5 w-3.5", syncing && "animate-spin")}
-                strokeWidth={1.8}
-              />
-              {syncing ? "Syncing" : "Sync now"}
-            </ActionButton>
-            <ActionButton
-              variant="quiet"
-              className="px-4 py-2"
-              onClick={() => setStatus("disconnected")}
-            >
-              <Link2Off className="h-3.5 w-3.5" strokeWidth={1.8} />
-              Disconnect
-            </ActionButton>
-          </>
         )}
       </div>
     </article>
@@ -134,13 +146,73 @@ function PlatformCard({ platform }: { platform: (typeof platforms)[number] }) {
 }
 
 export function PlatformConnections() {
-  return (
-    <div className="space-y-6">
-      <div className="grid gap-6 xl:grid-cols-2">
-        {platforms.map((p) => (
-          <PlatformCard key={p.key} platform={p} />
+  const { authenticated, profiles, isLoading, error, refetch, syncProfile, isSyncing, syncError } =
+    usePlatforms();
+  const [syncingProfileId, setSyncingProfileId] = useState<number | null>(null);
+
+  const handleSync = async (profileId: number) => {
+    setSyncingProfileId(profileId);
+    try {
+      await syncProfile(profileId);
+    } catch {
+      // Error state captured by syncError hook
+    } finally {
+      setSyncingProfileId(null);
+    }
+  };
+
+  if (!authenticated) {
+    return (
+      <EmptyState
+        title="Sign in to view your platforms"
+        description="Sign in with your CodePulse account to view and sync your connected platform profiles."
+      />
+    );
+  }
+
+  if (isLoading) {
+    return (
+      <div className="grid gap-6 xl:grid-cols-2" aria-busy>
+        {Array.from({ length: 2 }).map((_, i) => (
+          <div key={i} className="surface-card space-y-6 p-6">
+            <div className="flex items-center gap-3">
+              <Skeleton className="h-12 w-12 rounded-2xl" />
+              <div className="space-y-2">
+                <Skeleton className="h-5 w-32" />
+                <Skeleton className="h-3 w-20" />
+              </div>
+            </div>
+            <Skeleton className="h-20 w-full rounded-xl" />
+          </div>
         ))}
       </div>
+    );
+  }
+
+  if (error) {
+    return <ErrorState description={getDashboardErrorMessage(error)} onRetry={() => refetch()} />;
+  }
+
+  return (
+    <div className="space-y-6">
+      {profiles.length === 0 ? (
+        <EmptyState
+          title="No platform profiles connected"
+          description="Your account currently has no connected competitive programming handles."
+        />
+      ) : (
+        <div className="grid gap-6 xl:grid-cols-2">
+          {profiles.map((p) => (
+            <ProfileCard
+              key={p.id}
+              profile={p}
+              onSync={handleSync}
+              isSyncing={isSyncing && syncingProfileId === p.id}
+              syncError={syncingProfileId === p.id ? syncError : null}
+            />
+          ))}
+        </div>
+      )}
 
       <Panel
         title="Coming soon"

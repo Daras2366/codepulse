@@ -6,13 +6,7 @@
  */
 import { apiRequest } from "@/api/client";
 
-export type AchievementCategory =
-  | "problem"
-  | "contest"
-  | "rating"
-  | "streak"
-  | "topic"
-  | "special";
+export type AchievementCategory = "problem" | "contest" | "rating" | "streak" | "topic" | "special";
 
 export interface Achievement {
   id: number;

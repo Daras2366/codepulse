@@ -1,9 +1,9 @@
 import { useMemo, useState } from "react";
 
+import type { AnalyticsActivityDay } from "@/api/analytics";
 import type { DashboardSubmissionActivity } from "@/api/dashboard";
 import { ChartSkeleton, EmptyState, ErrorState } from "@/components/ui-kit/motion";
 import { Panel } from "@/components/ui-kit/Panel";
-import { buildHeatmap } from "@/lib/mock-data";
 
 const levels = [
   "bg-muted",
@@ -18,9 +18,23 @@ function levelForCount(count: number, peak: number) {
   return Math.min(4, Math.max(1, Math.ceil((count / peak) * 4)));
 }
 
-function buildActivityHeatmap(activity: DashboardSubmissionActivity[]) {
-  const counts = new Map(activity.map((item) => [item.activity_date, item.total_submissions]));
-  const peak = Math.max(...activity.map((item) => item.total_submissions), 0);
+type GenericActivityItem =
+  | DashboardSubmissionActivity
+  | AnalyticsActivityDay
+  | { date?: string; activity_date?: string; total_submissions: number };
+
+function buildActivityHeatmap(activity: GenericActivityItem[] = []) {
+  const counts = new Map<string, number>();
+  let peak = 0;
+
+  for (const item of activity) {
+    const key = "activity_date" in item && item.activity_date ? item.activity_date : item.date;
+    if (key) {
+      counts.set(key, item.total_submissions);
+      if (item.total_submissions > peak) peak = item.total_submissions;
+    }
+  }
+
   const today = new Date();
   const start = new Date(Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), today.getUTCDate()));
   start.setUTCDate(start.getUTCDate() - 52 * 7 - start.getUTCDay());
@@ -51,29 +65,19 @@ export function Heatmap({
   error,
   onRetry,
 }: {
-  activity?: DashboardSubmissionActivity[] | undefined;
+  activity?: GenericActivityItem[] | undefined;
   isLoading?: boolean;
   error?: string | undefined;
   onRetry?: (() => void) | undefined;
 }) {
-  const weeks = useMemo(
-    () => (activity ? buildActivityHeatmap(activity) : buildHeatmap()),
-    [activity],
-  );
+  const weeks = useMemo(() => buildActivityHeatmap(activity), [activity]);
   const [hover, setHover] = useState<{ label: string; count: number } | null>(null);
-  const total = activity
-    ? activity.reduce((sum, item) => sum + item.total_submissions, 0)
-    : weeks.flat().reduce((sum, day) => sum + day.count, 0);
-  const dashboardMode = activity !== undefined || isLoading || error !== undefined;
+  const total = activity?.reduce((sum, item) => sum + item.total_submissions, 0) ?? 0;
 
   return (
     <Panel
       title="Submission activity"
-      caption={
-        dashboardMode
-          ? `${total.toLocaleString()} submissions in your synced history`
-          : `${total.toLocaleString()} submissions in the last year`
-      }
+      caption={`${total.toLocaleString()} submissions in your synced history`}
       action={
         <div className="flex items-center gap-2">
           <span className="text-label text-subtle">Less</span>
@@ -88,7 +92,7 @@ export function Heatmap({
         <ChartSkeleton height={180} />
       ) : error ? (
         <ErrorState description={error} onRetry={onRetry} />
-      ) : activity?.length === 0 ? (
+      ) : !activity || activity.length === 0 ? (
         <EmptyState
           title="No submission activity yet"
           description="Sync your Codeforces profile after submitting a problem to see activity here."

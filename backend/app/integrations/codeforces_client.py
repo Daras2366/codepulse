@@ -1,8 +1,11 @@
+import logging
 from typing import Any
 
 import httpx
 
 from app.integrations.base_client import BasePlatformClient
+
+logger = logging.getLogger(__name__)
 
 
 class CodeforcesApiError(RuntimeError):
@@ -26,6 +29,7 @@ class CodeforcesClient(BasePlatformClient):
         params: dict[str, Any] | None = None,
     ) -> Any:
         url = f"{self.base_url}/{endpoint}"
+        logger.debug("Codeforces API request: %s params=%r", url, params)
 
         try:
             response = httpx.get(
@@ -35,9 +39,29 @@ class CodeforcesClient(BasePlatformClient):
             )
             response.raise_for_status()
             data = response.json()
-        except (httpx.HTTPError, ValueError) as exc:
+        except httpx.TimeoutException as exc:
+            logger.error(
+                "Codeforces API timeout: endpoint=%s params=%r error=%s",
+                endpoint, params, exc,
+            )
             raise CodeforcesApiError(
-                f"Codeforces API request failed: {exc}"
+                f"Codeforces API request timed out ({endpoint}): {exc}"
+            ) from exc
+        except httpx.HTTPStatusError as exc:
+            logger.error(
+                "Codeforces API HTTP error: endpoint=%s status=%s error=%s",
+                endpoint, exc.response.status_code, exc,
+            )
+            raise CodeforcesApiError(
+                f"Codeforces API HTTP {exc.response.status_code} ({endpoint}): {exc}"
+            ) from exc
+        except (httpx.HTTPError, ValueError) as exc:
+            logger.error(
+                "Codeforces API error: endpoint=%s error=%s",
+                endpoint, exc,
+            )
+            raise CodeforcesApiError(
+                f"Codeforces API request failed ({endpoint}): {exc}"
             ) from exc
 
         if not isinstance(data, dict):
@@ -116,30 +140,25 @@ class CodeforcesClient(BasePlatformClient):
 
     def fetch_contests(self) -> list[dict[str, Any]]:
         """
-        Fetch contest metadata from both regular and gym contest lists.
+        Fetch regular rated contest metadata from Codeforces.
 
-        The sync service uses this as a lookup table only; it does not
-        import every returned contest into the database.
+        Only regular (non-gym) contests are fetched because:
+
+        * Regular contests account for all rated participations.
+        * The gym=true endpoint returns tens of thousands of entries and
+          consistently times out under the default 10-second read timeout.
+
+        The sync service uses the returned list as a lookup table; it does
+        not import every contest into the database.
         """
         regular_contests = self._get(
             "contest.list",
-            params={
-                "gym": "false",
-            },
-        )
-        gym_contests = self._get(
-            "contest.list",
-            params={
-                "gym": "true",
-            },
+            params={"gym": "false"},
         )
 
         contests_by_id: dict[int, dict[str, Any]] = {}
 
         for contest in regular_contests:
             contests_by_id[contest["id"]] = contest
-
-        for contest in gym_contests:
-            contests_by_id.setdefault(contest["id"], contest)
 
         return list(contests_by_id.values())

@@ -1,7 +1,7 @@
-import { Panel, Pill } from "@/components/ui-kit/Panel";
-import { AnimatedCounter, EmptyState, ErrorState, ListSkeleton } from "@/components/ui-kit/motion";
+import type { AnalyticsContestEntry } from "@/api/analytics";
 import type { DashboardContests } from "@/api/dashboard";
-import { contests as mockContests, leaderboard } from "@/lib/mock-data";
+import { EmptyState, ErrorState, ListSkeleton } from "@/components/ui-kit/motion";
+import { Panel, Pill } from "@/components/ui-kit/Panel";
 import { cn } from "@/lib/utils";
 
 function deltaClass(delta: number | null) {
@@ -12,6 +12,15 @@ function deltaClass(delta: number | null) {
   );
 }
 
+type GenericContest = {
+  contest_name: string;
+  start_time?: string;
+  date?: string;
+  rank: number | null;
+  rating_change: number | null;
+  solved?: number;
+};
+
 export function ContestsTable({
   limit,
   contests,
@@ -20,32 +29,34 @@ export function ContestsTable({
   onRetry,
 }: {
   limit?: number;
-  contests?: DashboardContests | undefined;
+  contests?: DashboardContests | { contests: AnalyticsContestEntry[] } | undefined;
   isLoading?: boolean;
   error?: string | undefined;
   onRetry?: (() => void) | undefined;
 }) {
   const sourceRows = contests
-    ? contests.contests.map((contest) => ({
-        name: contest.contest_name,
-        platform: "Codeforces",
-        date: new Intl.DateTimeFormat("en", { dateStyle: "medium" }).format(
-          new Date(contest.start_time),
-        ),
-        rank: contest.rank,
-        delta: contest.rating_change,
-        status: contest.rating_change === null ? "Unrated" : "Rated",
-      }))
-    : mockContests;
+    ? contests.contests.map((contest: GenericContest) => {
+        const rawDate = contest.start_time ?? contest.date ?? "";
+        const dateObj = new Date(rawDate);
+        const formattedDate = isNaN(dateObj.getTime())
+          ? rawDate
+          : new Intl.DateTimeFormat("en", { dateStyle: "medium" }).format(dateObj);
+        return {
+          name: contest.contest_name,
+          platform: "Codeforces",
+          date: formattedDate,
+          rank: contest.rank,
+          delta: contest.rating_change,
+          status: contest.rating_change === null ? "Unrated" : "Rated",
+        };
+      })
+    : [];
   const rows = limit ? sourceRows.slice(0, limit) : sourceRows;
-  const dashboardMode = contests !== undefined || isLoading || error !== undefined;
 
   return (
     <Panel
       title="Recent contests"
-      caption={
-        dashboardMode ? "Your synced Codeforces contest history" : "Rated performance history"
-      }
+      caption="Your synced Codeforces contest history"
       bodyClassName="md:-mx-2"
     >
       {isLoading ? (
@@ -60,8 +71,11 @@ export function ContestsTable({
       ) : (
         <>
           <ul className="space-y-3 md:hidden">
-            {rows.map((c) => (
-              <li key={c.name} className="lift rounded-2xl border border-border bg-muted/40 p-4">
+            {rows.map((c, index) => (
+              <li
+                key={`${c.name}-${index}`}
+                className="lift rounded-2xl border border-border bg-muted/40 p-4"
+              >
                 <div className="grid grid-cols-[minmax(0,1fr)_auto] items-start gap-3">
                   <div className="min-w-0">
                     <p className="text-caption font-semibold">{c.name}</p>
@@ -101,8 +115,8 @@ export function ContestsTable({
                 </tr>
               </thead>
               <tbody>
-                {rows.map((c) => (
-                  <tr key={c.name} className="group transition-colors">
+                {rows.map((c, index) => (
+                  <tr key={`${c.name}-${index}`} className="group transition-colors">
                     <td className="rounded-l-2xl bg-transparent px-4 py-3.5 transition-colors group-hover:bg-muted">
                       <p className="text-caption font-semibold">{c.name}</p>
                       <p className="text-label text-subtle">{c.platform}</p>
@@ -137,58 +151,11 @@ export function ContestsTable({
 
 export function Leaderboard() {
   return (
-    <Panel title="Leaderboard" caption="Your circle, this week">
-      {leaderboard.length === 0 ? (
-        <EmptyState
-          title="No one to compare with yet"
-          description="Follow a few friends and their weekly rating movement will appear here."
-        />
-      ) : (
-        <ul className="space-y-1.5">
-          {leaderboard.map((u, i) => (
-            <li
-              key={u.handle}
-              className={cn(
-                "flex items-center gap-4 rounded-2xl px-3 py-3 transition-all duration-200 hover:-translate-y-px hover:bg-muted",
-                u.name === "You" && "bg-yellow-soft/60",
-              )}
-            >
-              <span className="text-caption w-5 text-subtle">{i + 1}</span>
-              <span
-                className={cn(
-                  "flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-label font-semibold",
-                  u.tint,
-                )}
-              >
-                {u.name
-                  .split(" ")
-                  .map((n) => n[0])
-                  .join("")}
-              </span>
-              <div className="min-w-0 flex-1">
-                <p className="text-caption truncate font-semibold">{u.name}</p>
-                <p className="text-label truncate text-subtle">
-                  {u.handle} · {u.country}
-                </p>
-              </div>
-              <div className="text-right">
-                <p className="text-caption font-semibold">
-                  <AnimatedCounter value={u.rating} />
-                </p>
-                <p
-                  className={cn(
-                    "text-label",
-                    u.growth >= 0 ? "text-[var(--success)]" : "text-[var(--danger)]",
-                  )}
-                >
-                  {u.growth >= 0 ? "+" : ""}
-                  {u.growth} wk
-                </p>
-              </div>
-            </li>
-          ))}
-        </ul>
-      )}
+    <Panel title="Circle Leaderboard" caption="Compare progress with friends">
+      <EmptyState
+        title="Leaderboard coming soon"
+        description="Connect with friends and compare rating movements once social features are released."
+      />
     </Panel>
   );
 }

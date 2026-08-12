@@ -82,9 +82,7 @@ export function getAnalyticsSummary(profileId: number) {
 }
 
 export function getAnalyticsSubmissionActivity(profileId: number) {
-  return apiRequest<AnalyticsSubmissionActivity>(
-    `/analytics/${profileId}/submission-activity`,
-  );
+  return apiRequest<AnalyticsSubmissionActivity>(`/analytics/${profileId}/submission-activity`);
 }
 
 export function getAnalyticsDifficultyDistribution(profileId: number) {
@@ -94,13 +92,9 @@ export function getAnalyticsDifficultyDistribution(profileId: number) {
 }
 
 export function getAnalyticsRatingProgression(profileId: number) {
-  return apiRequest<AnalyticsRatingProgression>(
-    `/analytics/${profileId}/rating-progression`,
-  );
+  return apiRequest<AnalyticsRatingProgression>(`/analytics/${profileId}/rating-progression`);
 }
 
 export function getAnalyticsContestPerformance(profileId: number) {
-  return apiRequest<AnalyticsContestPerformance>(
-    `/analytics/${profileId}/contest-performance`,
-  );
+  return apiRequest<AnalyticsContestPerformance>(`/analytics/${profileId}/contest-performance`);
 }

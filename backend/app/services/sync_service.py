@@ -1,8 +1,9 @@
+import logging
+import re
+import unicodedata
 from collections.abc import Mapping, Sequence
 from datetime import datetime, timezone
 from typing import Any
-import re
-import unicodedata
 
 from sqlalchemy import distinct, func
 from sqlalchemy.exc import IntegrityError
@@ -31,6 +32,8 @@ from app.repositories.rating_history_repository import RatingHistoryRepository
 from app.repositories.submission_repository import SubmissionRepository
 from app.schemas.sync import SyncResult
 from app.services.base import BaseService
+
+logger = logging.getLogger(__name__)
 
 
 class CodeforcesSyncError(RuntimeError):
@@ -329,9 +332,16 @@ class CodeforcesSyncService(BaseService):
         except CodeforcesUserNotFoundError:
             raise
         except RuntimeError as exc:
-            raise CodeforcesSyncError(
-                "Codeforces API request failed."
-            ) from exc
+            # Log the real cause so it is visible in the backend terminal.
+            # The exc detail is safe (no credentials) — it is the upstream
+            # Codeforces error message or an httpx transport message.
+            logger.error(
+                "Codeforces API call failed: fn=%s args=%r error=%s",
+                getattr(fetch_fn, "__name__", repr(fetch_fn)),
+                args,
+                exc,
+            )
+            raise CodeforcesSyncError(str(exc)) from exc
 
     def _update_profile(
         self,

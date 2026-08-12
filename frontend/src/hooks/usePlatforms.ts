@@ -1,0 +1,45 @@
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+
+import { hasAccessToken } from "@/api/client";
+import { syncCodeforcesProfile } from "@/api/dashboard";
+import { getMyPlatformProfiles } from "@/api/platform-profiles";
+
+export const platformQueryKeys = {
+  profiles: ["platform-profiles", "me"] as const,
+};
+
+export function usePlatforms() {
+  const queryClient = useQueryClient();
+  const authenticated = hasAccessToken();
+
+  const profilesQuery = useQuery({
+    queryKey: platformQueryKeys.profiles,
+    queryFn: getMyPlatformProfiles,
+    enabled: authenticated,
+  });
+
+  const syncMutation = useMutation({
+    mutationFn: (profileId: number) => syncCodeforcesProfile(profileId),
+    onSuccess: () => {
+      // Invalidate all relevant React Query data after a successful sync
+      void queryClient.invalidateQueries({ queryKey: ["platform-profiles"] });
+      void queryClient.invalidateQueries({ queryKey: ["dashboard"] });
+      void queryClient.invalidateQueries({ queryKey: ["analytics"] });
+      void queryClient.invalidateQueries({ queryKey: ["submissions"] });
+      void queryClient.invalidateQueries({ queryKey: ["contests"] });
+      void queryClient.invalidateQueries({ queryKey: ["achievements"] });
+      void queryClient.invalidateQueries({ queryKey: ["goals"] });
+    },
+  });
+
+  return {
+    authenticated,
+    profiles: profilesQuery.data ?? [],
+    isLoading: profilesQuery.isLoading,
+    error: profilesQuery.error,
+    refetch: profilesQuery.refetch,
+    syncProfile: syncMutation.mutateAsync,
+    isSyncing: syncMutation.isPending,
+    syncError: syncMutation.error,
+  };
+}

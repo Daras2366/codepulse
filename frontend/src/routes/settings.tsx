@@ -1,12 +1,13 @@
 import { createFileRoute } from "@tanstack/react-router";
 
 import { AppShell } from "@/components/layout/AppShell";
+import { Skeleton } from "@/components/ui-kit/motion";
 import { Panel } from "@/components/ui-kit/Panel";
-import { platforms } from "@/lib/mock-data";
+import { usePlatforms } from "@/hooks/usePlatforms";
 
 const title = "Settings — CodePulse";
 const description =
-  "Manage your CodePulse profile, connected competitive programming handles, daily goal targets and notification preferences.";
+  "Manage your CodePulse profile settings, connected handles, and notification preferences.";
 
 export const Route = createFileRoute("/settings")({
   head: () => ({
@@ -20,13 +21,22 @@ export const Route = createFileRoute("/settings")({
   component: Settings,
 });
 
-function Field({ label, value }: { label: string; value: string }) {
+function Field({
+  label,
+  value,
+  disabled = false,
+}: {
+  label: string;
+  value: string;
+  disabled?: boolean;
+}) {
   return (
     <label className="block">
       <span className="text-label uppercase text-subtle">{label}</span>
       <input
         defaultValue={value}
-        className="mt-2 h-11 w-full rounded-2xl border border-border bg-background px-4 text-caption outline-none transition-colors focus:border-violet"
+        disabled={disabled}
+        className="mt-2 h-11 w-full rounded-2xl border border-border bg-background px-4 text-caption outline-none transition-colors focus:border-violet disabled:opacity-60"
       />
     </label>
   );
@@ -51,15 +61,36 @@ function Toggle({ label, desc, on }: { label: string; desc: string; on?: boolean
 }
 
 function Settings() {
+  const { authenticated, profiles, isLoading } = usePlatforms();
+
+  if (isLoading) {
+    return (
+      <AppShell title="Settings" subtitle="Profile, handles and preferences.">
+        <div className="grid gap-6 xl:grid-cols-2" aria-busy>
+          <Skeleton className="h-[320px] w-full rounded-2xl" />
+          <Skeleton className="h-[320px] w-full rounded-2xl" />
+        </div>
+      </AppShell>
+    );
+  }
+
+  const codeforcesProfile = profiles.find((p) => p.platform === "codeforces");
+
   return (
     <AppShell title="Settings" subtitle="Profile, handles and how loud CodePulse should be.">
       <div className="grid gap-6 xl:grid-cols-2">
-        <Panel title="Profile">
+        <Panel title="Account Profile">
           <div className="space-y-5">
-            <Field label="Display name" value="Demo User" />
-            <Field label="Email" value="demo@example.com" />
-            <Field label="Country" value="India" />
-            <Field label="Daily goal (problems)" value="5" />
+            <Field
+              label="Account Status"
+              value={authenticated ? "Authenticated User" : "Signed Out"}
+              disabled
+            />
+            <Field
+              label="Connected Codeforces Handle"
+              value={codeforcesProfile ? `@${codeforcesProfile.username}` : "None"}
+              disabled
+            />
             <button className="rounded-full bg-primary px-5 py-2.5 text-caption font-semibold text-primary-foreground transition-transform duration-200 hover:-translate-y-0.5">
               Save changes
             </button>
@@ -69,18 +100,26 @@ function Settings() {
         <div className="space-y-6">
           <Panel title="Connected handles">
             <div className="space-y-4">
-              {platforms.map((p) => (
-                <Field key={p.key} label={p.name} value="demo_user" />
-              ))}
+              <Field
+                label="Codeforces"
+                value={codeforcesProfile ? codeforcesProfile.username : "Not connected"}
+                disabled
+              />
+              <Field label="LeetCode" value="Not connected" disabled />
+              <Field label="CodeChef" value="Not connected" disabled />
+              <Field label="AtCoder" value="Not connected" disabled />
             </div>
           </Panel>
 
           <Panel title="Notifications">
             <ul className="divide-y divide-border">
               <Toggle label="Contest reminders" desc="One hour before a rated round starts" on />
-              <Toggle label="Streak nudge" desc="Evening reminder if the daily goal is unmet" on />
-              <Toggle label="Weekly AI summary" desc="Sunday digest with next week's plan" on />
-              <Toggle label="Leaderboard moves" desc="When someone in your circle passes you" />
+              <Toggle label="Streak nudge" desc="Evening reminder if daily goal is unmet" on />
+              <Toggle
+                label="Weekly summary"
+                desc="Digest with next week's practice recommendations"
+                on
+              />
             </ul>
           </Panel>
         </div>

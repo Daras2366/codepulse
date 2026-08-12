@@ -244,3 +244,147 @@ class CodeforcesClientTests(TestCase):
         ):
             with self.assertRaises(CodeforcesApiError):
                 CodeforcesClient().fetch_profile("tourist")
+
+    # ------------------------------------------------------------------
+    # Regression tests for the gym=true timeout bug (502 on sync)
+    #
+    # Root cause: fetch_contests() was calling contest.list?gym=true which
+    # consistently times out under the default 10-second read timeout,
+    # producing an opaque 502 Bad Gateway on POST /sync/codeforces/{id}.
+    # Fix: fetch_contests() now only calls contest.list?gym=false.
+    # ------------------------------------------------------------------
+
+    def test_fetch_contests_does_not_call_gym_endpoint(self):
+        """fetch_contests must never request gym=true (it times out)."""
+        captured_params = []
+
+        class OkResponse:
+            status_code = 200
+
+            def raise_for_status(self):
+                pass
+
+            def json(self):
+                return {"status": "OK", "result": []}
+
+        def fake_get(url, params=None, timeout=None):
+            captured_params.append(dict(params or {}))
+            return OkResponse()
+
+        with patch("app.integrations.codeforces_client.httpx.get", side_effect=fake_get):
+            CodeforcesClient().fetch_contests()
+
+        gym_calls = [p for p in captured_params if p.get("gym") == "true"]
+        self.assertEqual(
+            gym_calls,
+            [],
+            "fetch_contests must not call contest.list?gym=true — "
+            "that endpoint times out and caused a 502 on sync.",
+        )
+
+    def test_fetch_contests_calls_contest_list_exactly_once(self):
+        """fetch_contests must issue exactly one HTTP request after the fix."""
+        call_count = [0]
+
+        class OkResponse:
+            status_code = 200
+
+            def raise_for_status(self):
+                pass
+
+            def json(self):
+                return {"status": "OK", "result": []}
+
+        def fake_get(url, params=None, timeout=None):
+            call_count[0] += 1
+            return OkResponse()
+
+        with patch("app.integrations.codeforces_client.httpx.get", side_effect=fake_get):
+            CodeforcesClient().fetch_contests()
+
+        self.assertEqual(
+            call_count[0],
+            1,
+            "fetch_contests should make exactly 1 HTTP request (gym=false only).",
+        )
+
+    def test_timeout_raises_api_error_with_endpoint_name(self):
+        """A read timeout must raise CodeforcesApiError mentioning the endpoint."""
+        import httpx as _httpx
+
+        with patch(
+            "app.integrations.codeforces_client.httpx.get",
+            side_effect=_httpx.ReadTimeout("timed out"),
+        ):
+            with self.assertRaises(CodeforcesApiError) as ctx:
+                CodeforcesClient().fetch_contests()
+
+        self.assertIn(
+            "contest.list",
+            str(ctx.exception),
+            "The CodeforcesApiError message should name the failing endpoint.",
+        )
+
+    def test_sync_error_propagates_underlying_message(self):
+        """_call_codeforces_api must raise CodeforcesSyncError with the
+        original exception message rather than a generic placeholder."""
+        from sqlalchemy import create_engine
+        from sqlalchemy.orm import sessionmaker
+        from sqlalchemy.pool import StaticPool
+
+        import app.models  # noqa: F401
+        from app.models.base import Base
+        from app.models.enums import Platform
+        from app.models.platform_profile import PlatformProfile
+        from app.models.user import User
+        from app.services.sync_service import CodeforcesSyncError, CodeforcesSyncService
+
+        engine = create_engine(
+            "sqlite://",
+            connect_args={"check_same_thread": False},
+            poolclass=StaticPool,
+        )
+        Base.metadata.create_all(engine)
+        session = sessionmaker(bind=engine)()
+
+        try:
+            user = User(username="u", email="u@x.com", password_hash="h")
+            session.add(user)
+            session.flush()
+            profile = PlatformProfile(
+                user_id=user.id,
+                platform=Platform.CODEFORCES,
+                username="handle",
+            )
+            session.add(profile)
+            session.commit()
+
+            specific_message = "Codeforces API request timed out (contest.list): The read operation timed out"
+
+            class TimingOutClient:
+                def fetch_profile(self, username):
+                    return {"rating": 1000, "maxRating": 1100, "rank": "pupil"}
+
+                def fetch_submissions(self, username):
+                    return []
+
+                def fetch_rating_history(self, username):
+                    return []
+
+                def fetch_contests(self):
+                    raise RuntimeError(specific_message)
+
+            service = CodeforcesSyncService(session, TimingOutClient())
+
+            with self.assertRaises(CodeforcesSyncError) as ctx:
+                service.sync_codeforces_profile(profile.id, user.id)
+
+            self.assertIn(
+                "timed out",
+                str(ctx.exception).lower(),
+                "CodeforcesSyncError should include the underlying timeout message.",
+            )
+        finally:
+            session.close()
+            Base.metadata.drop_all(engine)
+            engine.dispose()

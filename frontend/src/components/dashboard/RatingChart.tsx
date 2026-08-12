@@ -11,11 +11,11 @@ import {
   YAxis,
 } from "recharts";
 
+import type { AnalyticsRatingProgression } from "@/api/analytics";
 import type { DashboardRating } from "@/api/dashboard";
 import { ActionButton, ChartSkeleton, EmptyState, ErrorState } from "@/components/ui-kit/motion";
 import { Panel } from "@/components/ui-kit/Panel";
 import { exportChartAsPng } from "@/lib/export-chart";
-import { ratingSeries } from "@/lib/mock-data";
 
 function ChartTooltip({ active, payload, label }: TooltipProps<number, string>) {
   if (!active || !payload?.length) return null;
@@ -35,25 +35,32 @@ export function RatingChart({
   onRetry,
 }: {
   compact?: boolean;
-  rating?: DashboardRating | undefined;
+  rating?: DashboardRating | AnalyticsRatingProgression | undefined;
   isLoading?: boolean;
   error?: string | undefined;
   onRetry?: (() => void) | undefined;
 }) {
   const chartRef = useRef<HTMLDivElement | null>(null);
   const height = compact ? 260 : 360;
-  const data = rating
-    ? rating.history.map((item) => ({
-        date: new Intl.DateTimeFormat("en", { month: "short", year: "numeric" }).format(
-          new Date(item.recorded_at),
-        ),
-        rating: item.rating,
-      }))
-    : ratingSeries.map((item) => ({ date: item.month, rating: item.codeforces }));
+
+  const data = rating?.history
+    ? rating.history.map((item) => {
+        const rawDate = "recorded_at" in item ? item.recorded_at : item.date;
+        const dateObj = new Date(rawDate);
+        const formattedDate = isNaN(dateObj.getTime())
+          ? rawDate
+          : new Intl.DateTimeFormat("en", { month: "short", year: "numeric" }).format(dateObj);
+        return {
+          date: formattedDate,
+          rating: item.rating,
+        };
+      })
+    : [];
+
   const title = rating ? "Codeforces rating progress" : "Rating progress";
   const caption = rating
     ? "Rating changes from your synced Codeforces contests"
-    : "Contest rating across all tracked platforms";
+    : "Contest rating progress";
 
   return (
     <Panel

@@ -3,7 +3,6 @@ import { Cell, Pie, PieChart, ResponsiveContainer, Tooltip, type TooltipProps } 
 import type { DashboardProblems } from "@/api/dashboard";
 import { ChartSkeleton, EmptyState, ErrorState } from "@/components/ui-kit/motion";
 import { Panel } from "@/components/ui-kit/Panel";
-import { topics } from "@/lib/mock-data";
 
 const difficultyColors: Record<string, string> = {
   Easy: "var(--pastel-green)",
@@ -28,16 +27,14 @@ export function TopicDonut({
         value: item.solved_count,
         color: difficultyColors[item.difficulty] ?? "var(--pastel-blue)",
       }))
-    : topics.map((item) => ({ ...item, color: item.color }));
+    : [];
   const total = data.reduce((sum, item) => sum + item.value, 0);
-  const dashboardMode = problems !== undefined || isLoading || error !== undefined;
-  const title = dashboardMode ? "Solved by difficulty" : "Topic breakdown";
-  const caption = dashboardMode
-    ? "Accepted problems from your synced Codeforces history"
-    : "Where your solved problems come from";
 
   return (
-    <Panel title={title} caption={caption}>
+    <Panel
+      title="Solved by difficulty"
+      caption="Accepted problems from your synced Codeforces history"
+    >
       {isLoading ? (
         <ChartSkeleton height={220} />
       ) : error ? (
@@ -73,7 +70,7 @@ export function TopicDonut({
                         <p className="text-caption font-semibold">{payload[0]?.name}</p>
                         <p className="text-label text-muted-foreground">
                           {payload[0]?.value} solved ·{" "}
-                          {Math.round(((payload[0]?.value ?? 0) / total) * 100)}%
+                          {total > 0 ? Math.round(((payload[0]?.value ?? 0) / total) * 100) : 0}%
                         </p>
                       </div>
                     ) : null
