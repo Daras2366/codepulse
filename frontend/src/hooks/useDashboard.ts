@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { hasAccessToken } from "@/api/client";
+import type { Platform } from "@/api/dashboard";
 import {
   getDashboardContests,
   getDashboardOverview,
@@ -20,7 +21,7 @@ export const dashboardQueryKeys = {
   contests: (profileId: number) => ["dashboard", profileId, "contests"] as const,
 };
 
-export function useDashboard() {
+export function useDashboard(selectedPlatform?: Platform) {
   const queryClient = useQueryClient();
   const [authenticated, setAuthenticated] = useState(hasAccessToken);
 
@@ -46,7 +47,21 @@ export function useDashboard() {
     queryFn: getMyPlatformProfiles,
     enabled: authenticated,
   });
-  const profile = profiles.data?.find((item) => item.platform === "codeforces");
+  
+  // Auto-select platform based on availability and preference
+  const getSelectedProfile = () => {
+    if (!profiles.data || profiles.data.length === 0) return null;
+    
+    // If a platform is explicitly selected, use it
+    if (selectedPlatform) {
+      return profiles.data.find((item) => item.platform === selectedPlatform) || null;
+    }
+    
+    // Default to Codeforces if available, otherwise first available
+    return profiles.data.find((item) => item.platform === "codeforces") || profiles.data[0];
+  };
+  
+  const profile = getSelectedProfile();
   const profileId = profile?.id;
   const enabled = profileId !== undefined;
 

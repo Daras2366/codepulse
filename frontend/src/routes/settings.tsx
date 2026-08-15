@@ -79,6 +79,9 @@ function Settings() {
   }
 
   const codeforcesProfile = profiles.find((p) => p.platform === "codeforces");
+  const leetcodeProfile = profiles.find((p) => p.platform === "leetcode");
+  const codechefProfile = profiles.find((p) => p.platform === "codechef");
+  const atcoderProfile = profiles.find((p) => p.platform === "atcoder");
 
   // Build a meaningful account identity from real data.
   // If signed out or the user fetch failed, show a neutral placeholder.
@@ -96,7 +99,7 @@ function Settings() {
             {displayName && <Field label="Full name" value={displayName} disabled />}
             <Field
               label="Connected Codeforces Handle"
-              value={codeforcesProfile ? `@${codeforcesProfile.username}` : "None"}
+              value={codeforcesProfile ? codeforcesProfile.username : "None"}
               disabled
             />
             <button className="rounded-full bg-primary px-5 py-2.5 text-caption font-semibold text-primary-foreground transition-transform duration-200 hover:-translate-y-0.5">
@@ -110,12 +113,24 @@ function Settings() {
             <div className="space-y-4">
               <Field
                 label="Codeforces"
-                value={codeforcesProfile ? codeforcesProfile.username : "Not connected"}
+                value={codeforcesProfile ? `@${codeforcesProfile.username}` : "Not connected"}
                 disabled
               />
-              <Field label="LeetCode" value="Not connected" disabled />
-              <Field label="CodeChef" value="Not connected" disabled />
-              <Field label="AtCoder" value="Not connected" disabled />
+              <Field
+                label="LeetCode"
+                value={leetcodeProfile ? `@${leetcodeProfile.username}` : "Not connected"}
+                disabled
+              />
+              <Field
+                label="CodeChef"
+                value={codechefProfile ? `@${codechefProfile.username}` : "Not connected"}
+                disabled
+              />
+              <Field
+                label="AtCoder"
+                value={atcoderProfile ? `@${atcoderProfile.username}` : "Not connected"}
+                disabled
+              />
             </div>
           </Panel>
 

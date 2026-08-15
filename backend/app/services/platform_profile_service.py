@@ -22,8 +22,21 @@ class PlatformProfileService:
             return self.repository.get_by_user(user_id, skip, limit)
         return self.repository.get_all(skip, limit)
 
-    def create_profile(self, data: PlatformProfileCreate) -> PlatformProfile:
-        return self.repository.create(PlatformProfile(**data.model_dump()))
+    def create_profile(self, data: PlatformProfileCreate, user_id: int) -> PlatformProfile:
+        profile_data = {
+            "user_id": user_id,
+            "platform": data.platform,
+            "username": data.username,
+            "current_rating": None,
+            "max_rating": None,
+            "rank": None,
+            "problems_solved": 0,
+            "contests_attended": 0,
+            "profile_url": None,
+            "is_connected": True,
+            "last_synced_at": None,
+        }
+        return self.repository.create(PlatformProfile(**profile_data))
 
     def update_profile(self, profile: PlatformProfile, data: PlatformProfileUpdate) -> PlatformProfile:
         for field, value in data.model_dump(exclude_unset=True).items():

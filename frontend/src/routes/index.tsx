@@ -1,8 +1,9 @@
 import { createFileRoute } from "@tanstack/react-router";
+import { useState } from "react";
 import { ClipboardList, RefreshCw, Target, Trophy } from "lucide-react";
 
 import { getDashboardErrorMessage } from "@/api/client";
-import type { DashboardOverview } from "@/api/dashboard";
+import type { DashboardOverview, Platform } from "@/api/dashboard";
 import { ActivityTimeline } from "@/components/dashboard/ActivityTimeline";
 import { Heatmap } from "@/components/dashboard/Heatmap";
 import { PlatformCards } from "@/components/dashboard/PlatformCards";
@@ -17,7 +18,7 @@ import { useDashboard } from "@/hooks/useDashboard";
 
 const title = "CodePulse — Competitive Programming Tracker";
 const description =
-  "Track Codeforces progress with synced submissions, contests, ratings and problem statistics.";
+  "Track competitive programming progress with synced submissions, contests, ratings and problem statistics.";
 
 export const Route = createFileRoute("/")({
   head: () => ({
@@ -46,20 +47,26 @@ function DashboardStatSkeletons() {
   );
 }
 
-function OverviewStats({ overview }: { overview: DashboardOverview }) {
+function OverviewStats({
+  overview,
+  platformName,
+}: {
+  overview: DashboardOverview;
+  platformName: string;
+}) {
   return (
     <div className="grid gap-6 sm:grid-cols-2 xl:grid-cols-4">
       <StatCard
         label="Problems solved"
         value={String(overview.total_problems_solved)}
-        note="Accepted Codeforces problems"
+        note={`Accepted ${platformName} problems`}
         icon={Target}
         tint="bg-blue-soft"
       />
       <StatCard
         label="Total submissions"
         value={String(overview.total_submissions)}
-        note="Synced Codeforces submissions"
+        note={`Synced ${platformName} submissions`}
         icon={ClipboardList}
         tint="bg-violet-soft"
       />
@@ -86,14 +93,23 @@ function OverviewStats({ overview }: { overview: DashboardOverview }) {
 }
 
 function Dashboard() {
-  const dashboard = useDashboard();
+  const [selectedPlatform, setSelectedPlatform] = useState<Platform | null>(null);
+  const dashboard = useDashboard(selectedPlatform);
+
+  // Get platform name for display
+  const platformName =
+    dashboard.profile?.platform === "leetcode"
+      ? "LeetCode"
+      : dashboard.profile?.platform === "codeforces"
+        ? "Codeforces"
+        : dashboard.profile?.platform || "Platform";
 
   if (!dashboard.authenticated) {
     return (
       <AppShell title="Dashboard" subtitle="Your synced competitive programming record.">
         <EmptyState
           title="Sign in to view your dashboard"
-          description="Use your CodePulse session to load the Codeforces profile connected to your account."
+          description="Use your CodePulse session to load your connected platform profiles."
         />
       </AppShell>
     );
@@ -122,8 +138,8 @@ function Dashboard() {
     return (
       <AppShell title="Dashboard" subtitle="Your synced competitive programming record.">
         <EmptyState
-          title="No Codeforces profile yet"
-          description="Connect and sync a Codeforces profile to see your statistics here."
+          title="No platform profiles connected"
+          description="Connect a platform profile to see your statistics here."
         />
       </AppShell>
     );
@@ -145,9 +161,40 @@ function Dashboard() {
     ? getDashboardErrorMessage(dashboard.contests.error)
     : undefined;
 
+  // Get available platforms for selector
+  const availablePlatforms = dashboard.profiles.data?.map((p) => p.platform) || [];
+  const hasMultiplePlatforms = availablePlatforms.length > 1;
+
   return (
-    <AppShell title="Dashboard" subtitle="Your synced Codeforces progress at a glance.">
+    <AppShell
+      title="Dashboard"
+      subtitle="Your synced competitive programming progress at a glance."
+    >
       <div className="space-y-6">
+        {/* Platform Selector */}
+        {hasMultiplePlatforms && (
+          <div className="flex gap-2">
+            {availablePlatforms.map((platform) => (
+              <button
+                key={platform}
+                onClick={() => setSelectedPlatform(platform === selectedPlatform ? null : platform)}
+                className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
+                  (selectedPlatform === null && platform === dashboard.profile?.platform) ||
+                  selectedPlatform === platform
+                    ? "bg-primary text-primary-foreground"
+                    : "bg-muted text-muted-foreground hover:bg-muted/80"
+                }`}
+              >
+                {platform === "leetcode"
+                  ? "LeetCode"
+                  : platform === "codeforces"
+                    ? "Codeforces"
+                    : platform.charAt(0).toUpperCase() + platform.slice(1)}
+              </button>
+            ))}
+          </div>
+        )}
+
         {dashboard.overview.isLoading ? (
           <DashboardStatSkeletons />
         ) : overviewError ? (
@@ -155,7 +202,7 @@ function Dashboard() {
         ) : dashboard.overview.data ? (
           <>
             <WelcomeCard overview={dashboard.overview.data} />
-            <OverviewStats overview={dashboard.overview.data} />
+            <OverviewStats overview={dashboard.overview.data} platformName={platformName} />
           </>
         ) : null}
 

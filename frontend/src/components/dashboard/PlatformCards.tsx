@@ -13,14 +13,34 @@ export function PlatformCards({
   const spark =
     rating?.history.map((item) => ({ rating: item.rating, date: item.recorded_at })) ?? [];
 
+  // Platform-specific styling
+  const platformConfig = {
+    leetcode: {
+      short: "LC",
+      name: "LeetCode",
+      tint: "bg-yellow-soft",
+      color: "var(--pastel-yellow)",
+    },
+    codeforces: {
+      short: "CF",
+      name: "Codeforces",
+      tint: "bg-blue-soft",
+      color: "var(--pastel-blue)",
+    },
+  };
+
+  const config = platformConfig[overview.platform] || platformConfig.codeforces;
+
   return (
     <article className="surface-card lift group max-w-md p-6">
       <div className="flex min-w-0 items-center gap-3">
-        <span className="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl bg-blue-soft text-caption font-bold transition-transform duration-300 group-hover:scale-105">
-          CF
+        <span
+          className={`flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl ${config.tint} text-caption font-bold transition-transform duration-300 group-hover:scale-105`}
+        >
+          {config.short}
         </span>
         <div className="min-w-0">
-          <p className="text-card-title truncate">Codeforces</p>
+          <p className="text-card-title truncate">{config.name}</p>
           <p className="text-label text-subtle">{overview.rank ?? "No current rank"}</p>
         </div>
       </div>
@@ -54,7 +74,7 @@ export function PlatformCards({
                 <Line
                   type="monotone"
                   dataKey="rating"
-                  stroke="var(--pastel-blue)"
+                  stroke={config.color}
                   strokeWidth={2.5}
                   dot={false}
                   activeDot={{ r: 3.5, strokeWidth: 2, stroke: "var(--card)" }}
@@ -79,6 +99,12 @@ export function PlatformCards({
             {overview.total_problems_solved.toLocaleString()}
           </dd>
         </div>
+        {overview.rank && (
+          <div className="col-span-2">
+            <dt className="text-label uppercase text-subtle">Global rank</dt>
+            <dd className="text-caption font-semibold">{overview.rank}</dd>
+          </div>
+        )}
       </dl>
     </article>
   );

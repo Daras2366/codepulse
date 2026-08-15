@@ -18,6 +18,24 @@ export interface PlatformProfile {
   updated_at: string;
 }
 
+export interface PlatformProfileCreate {
+  platform: Platform;
+  username: string;
+}
+
 export function getMyPlatformProfiles() {
   return apiRequest<PlatformProfile[]>("/platform-profiles/me");
+}
+
+export function createPlatformProfile(data: PlatformProfileCreate) {
+  return apiRequest<PlatformProfile>("/platform-profiles", {
+    method: "POST",
+    body: JSON.stringify(data),
+  });
+}
+
+export function deletePlatformProfile(profileId: number) {
+  return apiRequest<void>(`/platform-profiles/${profileId}`, {
+    method: "DELETE",
+  });
 }

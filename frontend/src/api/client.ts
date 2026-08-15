@@ -31,6 +31,7 @@ export async function apiRequest<T>(path: string, init: RequestInit = {}): Promi
       ...init,
       headers: {
         Accept: "application/json",
+        "Content-Type": "application/json",
         Authorization: `Bearer ${token}`,
         ...init.headers,
       },

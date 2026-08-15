@@ -20,9 +20,10 @@ from app.services.leetcode_sync_service import (
 
 
 class FakeLeetCodeClient:
-    def __init__(self, profile, submissions, profile_exception=None):
+    def __init__(self, profile, submissions, rating_history=None, profile_exception=None):
         self.profile = profile
         self.submissions = submissions
+        self.rating_history = rating_history or []
         self.profile_exception = profile_exception
 
     def fetch_profile(self, username):
@@ -34,10 +35,13 @@ class FakeLeetCodeClient:
         return self.submissions
     
     def fetch_rating_history(self, username):
-        return []
+        return self.rating_history
     
     def fetch_contests(self):
         return []
+    
+    def fetch_problem_details(self, title_slug):
+        return None
 
 
 class LeetCodeSyncServiceTests(TestCase):
@@ -88,7 +92,7 @@ class LeetCodeSyncServiceTests(TestCase):
         )
 
         with self.assertRaises(LeetCodeUsernameNotFoundError):
-            service.sync_leetcode_profile(self.profile.id, self.user.id)
+            service.sync_profile(self.profile.id, self.user.id)
 
         # Verify last_synced_at was not updated
         self.assertIsNone(
@@ -131,7 +135,7 @@ class LeetCodeSyncServiceTests(TestCase):
             FakeLeetCodeClient(profile_data, submissions_data),
         )
 
-        result = service.sync_leetcode_profile(self.profile.id, self.user.id)
+        result = service.sync_profile(self.profile.id, self.user.id)
 
         # Verify sync result
         self.assertEqual(result.platform, "leetcode")
@@ -139,13 +143,13 @@ class LeetCodeSyncServiceTests(TestCase):
         self.assertEqual(result.problems_created, 2)
         self.assertEqual(result.submissions_created, 2)
         self.assertEqual(result.submissions_fetched, 2)
-        self.assertEqual(result.problems_solved, 2)
+        self.assertEqual(result.problems_solved, 2)  # Both submissions are accepted
         self.assertEqual(result.contests_attended, 0)
 
         # Verify profile was updated
         self.session.refresh(self.profile)
         self.assertEqual(self.profile.problems_solved, 2)
-        self.assertEqual(self.profile.current_rating, 1800.5)
+        self.assertEqual(self.profile.current_rating, 1800)  # Should be converted to int
         self.assertIsNotNone(self.profile.last_synced_at)
 
         # Verify submissions were created
@@ -287,7 +291,7 @@ class LeetCodeSyncServiceTests(TestCase):
             FakeLeetCodeClient(profile_data, [submission_data]),
         )
 
-        result = service.sync_leetcode_profile(self.profile.id, self.user.id)
+        result = service.sync_profile(self.profile.id, self.user.id)
 
         # Verify problem was not duplicated
         self.assertEqual(result.problems_created, 0)
@@ -334,7 +338,7 @@ class LeetCodeSyncServiceTests(TestCase):
             FakeLeetCodeClient(profile_data, submissions_data),
         )
 
-        result = service.sync_leetcode_profile(self.profile.id, self.user.id)
+        result = service.sync_profile(self.profile.id, self.user.id)
 
         # Only 1 accepted submission
         self.assertEqual(result.problems_solved, 1)
@@ -360,7 +364,7 @@ class LeetCodeSyncServiceTests(TestCase):
             FakeLeetCodeClient(profile_data, []),
         )
 
-        result = service.sync_leetcode_profile(self.profile.id, self.user.id)
+        result = service.sync_profile(self.profile.id, self.user.id)
 
         # Verify sync completed
         self.assertEqual(result.submissions_created, 0)
@@ -369,7 +373,7 @@ class LeetCodeSyncServiceTests(TestCase):
 
         # Verify profile was updated
         self.session.refresh(self.profile)
-        self.assertEqual(self.profile.current_rating, 1500.0)
+        self.assertEqual(self.profile.current_rating, 1500)  # Should be converted to int
         self.assertEqual(self.profile.problems_solved, 0)
         self.assertIsNotNone(self.profile.last_synced_at)
 
@@ -473,7 +477,7 @@ class LeetCodeSyncServiceTests(TestCase):
             FakeLeetCodeClient(profile_data, submissions_data),
         )
 
-        result = service.sync_leetcode_profile(self.profile.id, self.user.id)
+        result = service.sync_profile(self.profile.id, self.user.id)
 
         # Verify counts
         self.assertEqual(result.submissions_fetched, 2)

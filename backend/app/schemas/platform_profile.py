@@ -19,8 +19,9 @@ class PlatformProfileBase(BaseModel):
     last_synced_at: datetime | None = None
 
 
-class PlatformProfileCreate(PlatformProfileBase):
-    pass
+class PlatformProfileCreate(BaseModel):
+    platform: Platform
+    username: str
 
 
 class PlatformProfileUpdate(BaseModel):

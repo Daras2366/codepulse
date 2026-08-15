@@ -1,9 +1,10 @@
 import { useState } from "react";
-import { CheckCircle2, Clock3, Lock, RefreshCw, Trophy } from "lucide-react";
+import { CheckCircle2, Clock3, Lock, Plus, RefreshCw, Trophy, X } from "lucide-react";
 
 import { getDashboardErrorMessage } from "@/api/client";
 import type { SyncResult } from "@/api/dashboard";
-import type { PlatformProfile } from "@/api/platform-profiles";
+import type { PlatformProfile, PlatformProfileCreate } from "@/api/platform-profiles";
+import { createPlatformProfile, deletePlatformProfile } from "@/api/platform-profiles";
 import { Panel, Pill } from "@/components/ui-kit/Panel";
 import {
   ActionButton,
@@ -15,8 +16,12 @@ import {
 import { usePlatforms } from "@/hooks/usePlatforms";
 import { cn } from "@/lib/utils";
 
+const availablePlatforms = [
+  { name: "LeetCode", short: "LC", tint: "bg-yellow-soft", value: "leetcode" as const },
+  { name: "Codeforces", short: "CF", tint: "bg-blue-soft", value: "codeforces" as const },
+];
+
 const comingSoonPlatforms = [
-  { name: "LeetCode", short: "LC", tint: "bg-yellow-soft", note: "API sync integration planned" },
   { name: "CodeChef", short: "CC", tint: "bg-pink-soft", note: "API sync integration planned" },
   { name: "AtCoder", short: "AC", tint: "bg-violet-soft", note: "API sync integration planned" },
 ];
@@ -38,6 +43,7 @@ function formatLastSync(dateString: string | null) {
 function ProfileCard({
   profile,
   onSync,
+  onDelete,
   isSyncing,
   syncError,
   syncResult,
@@ -45,6 +51,7 @@ function ProfileCard({
 }: {
   profile: PlatformProfile;
   onSync: (profile: PlatformProfile) => void;
+  onDelete: () => void;
   isSyncing: boolean;
   syncError: unknown;
   syncResult?: SyncResult;
@@ -53,9 +60,13 @@ function ProfileCard({
   const isCodeforces = profile.platform === "codeforces";
   const isLeetCode = profile.platform === "leetcode";
   const canSync = isCodeforces || isLeetCode;
-  
+
   const platformName = isCodeforces ? "Codeforces" : isLeetCode ? "LeetCode" : profile.platform;
-  const platformShort = isCodeforces ? "CF" : isLeetCode ? "LC" : profile.platform.slice(0, 2).toUpperCase();
+  const platformShort = isCodeforces
+    ? "CF"
+    : isLeetCode
+      ? "LC"
+      : profile.platform.slice(0, 2).toUpperCase();
   const tint = isCodeforces ? "bg-blue-soft" : isLeetCode ? "bg-yellow-soft" : "bg-muted";
 
   return (
@@ -119,6 +130,18 @@ function ProfileCard({
           </dd>
         </div>
         <div>
+          <dt className="text-label uppercase text-subtle">Contests attended</dt>
+          <dd className="text-caption mt-0.5 font-semibold">
+            {profile.contests_attended.toLocaleString()}
+          </dd>
+        </div>
+        {profile.rank && (
+          <div className="col-span-2">
+            <dt className="text-label uppercase text-subtle">Global rank</dt>
+            <dd className="text-caption mt-0.5 font-semibold">{profile.rank}</dd>
+          </div>
+        )}
+        <div className="col-span-2">
           <dt className="text-label uppercase text-subtle">Last sync</dt>
           <dd className="text-caption mt-0.5 flex items-center gap-1.5 font-semibold text-muted-foreground">
             <Clock3 className="h-3.5 w-3.5 shrink-0 text-subtle" strokeWidth={1.6} />
@@ -165,6 +188,15 @@ function ProfileCard({
             {isSyncing ? "Syncing" : "Sync now"}
           </ActionButton>
         )}
+        <ActionButton
+          variant="ghost"
+          className="px-4 py-2 text-destructive hover:text-destructive"
+          disabled={isSyncing}
+          onClick={onDelete}
+        >
+          <X className="h-3.5 w-3.5" strokeWidth={1.8} />
+          Disconnect
+        </ActionButton>
       </div>
     </article>
   );
@@ -184,13 +216,23 @@ export function PlatformConnections() {
   } = usePlatforms();
   const [syncingProfileId, setSyncingProfileId] = useState<number | null>(null);
   const [lastSyncedProfileId, setLastSyncedProfileId] = useState<number | null>(null);
+  const [showConnectDialog, setShowConnectDialog] = useState(false);
+  const [selectedPlatform, setSelectedPlatform] = useState<
+    (typeof availablePlatforms)[number] | null
+  >(null);
+  const [username, setUsername] = useState("");
+  const [isConnecting, setIsConnecting] = useState(false);
+  const [connectError, setConnectError] = useState<string | null>(null);
 
   // Filter out platforms from coming soon if user has a profile for them
-  const connectedPlatformNames = new Set(
-    profiles.map((p) => p.platform.toLowerCase())
-  );
+  const connectedPlatformNames = new Set(profiles.map((p) => p.platform.toLowerCase()));
   const filteredComingSoonPlatforms = comingSoonPlatforms.filter(
-    (p) => !connectedPlatformNames.has(p.name.toLowerCase())
+    (p) => !connectedPlatformNames.has(p.name.toLowerCase()),
+  );
+
+  // Filter available platforms to show only those not connected
+  const availablePlatformsToConnect = availablePlatforms.filter(
+    (p) => !connectedPlatformNames.has(p.value),
   );
 
   const handleSync = async (profile: PlatformProfile) => {
@@ -203,6 +245,45 @@ export function PlatformConnections() {
       // Error state captured by syncError hook
     } finally {
       setSyncingProfileId(null);
+    }
+  };
+
+  const handleConnectClick = (platform: (typeof availablePlatforms)[number]) => {
+    setSelectedPlatform(platform);
+    setUsername("");
+    setConnectError(null);
+    setShowConnectDialog(true);
+  };
+
+  const handleConnect = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!selectedPlatform || !username.trim()) return;
+
+    setIsConnecting(true);
+    setConnectError(null);
+
+    try {
+      const data: PlatformProfileCreate = {
+        platform: selectedPlatform.value,
+        username: username.trim(),
+      };
+      await createPlatformProfile(data);
+      setShowConnectDialog(false);
+      setUsername("");
+      await refetch();
+    } catch (error) {
+      setConnectError(getDashboardErrorMessage(error));
+    } finally {
+      setIsConnecting(false);
+    }
+  };
+
+  const handleDeleteProfile = async (profileId: number) => {
+    try {
+      await deletePlatformProfile(profileId);
+      await refetch();
+    } catch (error) {
+      console.error("Failed to delete profile:", error);
     }
   };
 
@@ -240,10 +321,43 @@ export function PlatformConnections() {
 
   return (
     <div className="space-y-6">
+      {/* Connect Platform Section */}
+      {availablePlatformsToConnect.length > 0 && (
+        <Panel
+          title="Connect a platform"
+          caption="Add your competitive programming handles to sync your progress"
+        >
+          <div className="grid gap-4 sm:grid-cols-2">
+            {availablePlatformsToConnect.map((platform) => (
+              <button
+                key={platform.value}
+                onClick={() => handleConnectClick(platform)}
+                className="lift flex items-center gap-3 rounded-2xl border border-border bg-muted/40 p-4 text-left transition-colors hover:bg-muted/60"
+              >
+                <span
+                  className={cn(
+                    "flex h-10 w-10 shrink-0 items-center justify-center rounded-xl text-label font-bold",
+                    platform.tint,
+                  )}
+                  aria-hidden
+                >
+                  {platform.short}
+                </span>
+                <div className="min-w-0 flex-1">
+                  <p className="text-caption font-semibold">{platform.name}</p>
+                  <p className="text-label text-subtle">Connect your account</p>
+                </div>
+                <Plus className="h-4 w-4 text-subtle" strokeWidth={1.8} />
+              </button>
+            ))}
+          </div>
+        </Panel>
+      )}
+
       {profiles.length === 0 ? (
         <EmptyState
           title="No platform profiles connected"
-          description="Your account currently has no connected competitive programming handles."
+          description="Connect a platform above to start tracking your competitive programming progress."
         />
       ) : (
         <div className="grid gap-6 xl:grid-cols-2">
@@ -252,6 +366,7 @@ export function PlatformConnections() {
               key={p.id}
               profile={p}
               onSync={handleSync}
+              onDelete={() => handleDeleteProfile(p.id)}
               isSyncing={isSyncing && syncingProfileId === p.id}
               syncError={
                 syncingProfileId === p.id || lastSyncedProfileId === p.id ? syncError : null
@@ -305,6 +420,56 @@ export function PlatformConnections() {
           </p>
         )}
       </Panel>
+
+      {/* Connect Platform Dialog */}
+      {showConnectDialog && selectedPlatform && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+          <div className="surface-card w-full max-w-md p-6">
+            <h2 className="text-h2 mb-2">Connect {selectedPlatform.name}</h2>
+            <p className="text-label text-muted-foreground mb-6">
+              Enter your {selectedPlatform.name} username to connect your account.
+            </p>
+
+            <form onSubmit={handleConnect} className="space-y-4">
+              <div>
+                <label htmlFor="username" className="text-label mb-2 block">
+                  Username
+                </label>
+                <input
+                  id="username"
+                  type="text"
+                  value={username}
+                  onChange={(e) => setUsername(e.target.value)}
+                  placeholder={`Your ${selectedPlatform.name} username`}
+                  className="w-full rounded-lg border border-border bg-background px-4 py-2 text-foreground focus:outline-none focus:ring-2 focus:ring-ring"
+                  disabled={isConnecting}
+                  autoFocus
+                />
+              </div>
+
+              {connectError && (
+                <div className="rounded-lg bg-destructive/10 p-3 text-caption text-destructive">
+                  {connectError}
+                </div>
+              )}
+
+              <div className="flex gap-3 justify-end">
+                <ActionButton
+                  type="button"
+                  variant="ghost"
+                  onClick={() => setShowConnectDialog(false)}
+                  disabled={isConnecting}
+                >
+                  Cancel
+                </ActionButton>
+                <ActionButton type="submit" disabled={isConnecting || !username.trim()}>
+                  {isConnecting ? "Connecting..." : "Connect"}
+                </ActionButton>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

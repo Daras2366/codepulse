@@ -199,6 +199,7 @@ class LeetCodeClient(BasePlatformClient):
                 timestamp
                 statusDisplay
                 lang
+                difficulty
             }
         }
         """
@@ -284,3 +285,33 @@ class LeetCodeClient(BasePlatformClient):
         # Contests are retrieved through user-specific contest history
         logger.info("LeetCode contest list not available via public API")
         return []
+
+    def fetch_problem_details(self, title_slug: str) -> dict[str, Any] | None:
+        """
+        Fetch detailed information about a specific LeetCode problem.
+        
+        Returns problem details including difficulty if available.
+        Returns None if the problem cannot be found.
+        """
+        
+        query = """
+        query getProblemDetails($titleSlug: String!) {
+            question(titleSlug: $titleSlug) {
+                title
+                difficulty
+                topicTags {
+                    name
+                }
+            }
+        }
+        """
+        
+        variables = {"titleSlug": title_slug}
+        
+        try:
+            result = self._graphql_query(query, variables)
+            question = result.get("question")
+            return question
+        except LeetCodeApiError:
+            logger.warning("Failed to fetch problem details for %s", title_slug)
+            return None

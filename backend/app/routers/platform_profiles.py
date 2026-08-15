@@ -88,8 +88,7 @@ def create_profile(
 ):
     """Create a platform profile owned by the authenticated user."""
     # Enforce ownership: always use the authenticated user's id.
-    data_with_user = data.model_copy(update={"user_id": current_user.id})
-    return PlatformProfileService(db).create_profile(data_with_user)
+    return PlatformProfileService(db).create_profile(data, current_user.id)
 
 
 @router.patch("/{profile_id}", response_model=PlatformProfileResponse)
