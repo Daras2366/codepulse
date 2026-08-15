@@ -134,6 +134,7 @@ export interface SyncResult {
   contests_created: number;
   submissions_created: number;
   submissions_skipped: number;
+  submissions_fetched: number;
   rating_history_created: number;
   contest_participations_created: number;
   problems_solved: number;
@@ -143,4 +144,8 @@ export interface SyncResult {
 
 export function syncCodeforcesProfile(profileId: number) {
   return apiRequest<SyncResult>(`/sync/codeforces/${profileId}`, { method: "POST" });
+}
+
+export function syncPlatformProfile(platform: Platform, profileId: number) {
+  return apiRequest<SyncResult>(`/sync/${platform}/${profileId}`, { method: "POST" });
 }

@@ -1,11 +1,10 @@
 import logging
 import re
 import unicodedata
-from collections.abc import Mapping, Sequence
+from collections.abc import Mapping
 from datetime import datetime, timezone
 from typing import Any
 
-from sqlalchemy import distinct, func
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -21,43 +20,29 @@ from app.models.platform_profile import PlatformProfile
 from app.models.problem import Problem
 from app.models.rating_history import RatingHistory
 from app.models.submission import Submission
-from app.repositories.contest_participation_repository import (
-    ContestParticipationRepository,
-)
-from app.repositories.contest_repository import ContestRepository
-from app.repositories.platform_profile_repository import (
-    PlatformProfileRepository,
-)
-from app.repositories.problem_repository import ProblemRepository
-from app.repositories.rating_history_repository import RatingHistoryRepository
-from app.repositories.submission_repository import SubmissionRepository
 from app.schemas.sync import SyncResult
-from app.services.base import BaseService
+from app.services.base_sync_service import (
+    BaseSyncService,
+    PlatformSyncError,
+    PlatformUsernameNotFoundError,
+    PlatformProfileNotFoundError,
+    ProfileAccessDeniedError,
+    UnsupportedPlatformError,
+)
 
 logger = logging.getLogger(__name__)
 
 
-class CodeforcesSyncError(RuntimeError):
+# Backward compatibility aliases
+class CodeforcesSyncError(PlatformSyncError):
     """Base exception for Codeforces synchronization errors."""
 
 
-class PlatformProfileNotFoundError(CodeforcesSyncError):
-    """Raised when the requested platform profile does not exist."""
-
-
-class UnsupportedPlatformError(CodeforcesSyncError):
-    """Raised when the profile is not a Codeforces profile."""
-
-
-class CodeforcesUsernameNotFoundError(CodeforcesSyncError):
+class CodeforcesUsernameNotFoundError(PlatformUsernameNotFoundError):
     """Raised when a connected Codeforces handle no longer exists."""
 
 
-class ProfileAccessDeniedError(CodeforcesSyncError):
-    """Raised when the authenticated user does not own the profile."""
-
-
-class CodeforcesSyncService(BaseService):
+class CodeforcesSyncService(BaseSyncService):
     """
     Synchronize a Codeforces platform profile into CodePulse.
 
@@ -82,15 +67,11 @@ class CodeforcesSyncService(BaseService):
         client: CodeforcesClient | None = None,
     ) -> None:
         super().__init__(db)
-
         self.client = client or CodeforcesClient()
 
-        self.platform_profiles = PlatformProfileRepository(db)
-        self.problems = ProblemRepository(db)
-        self.contests = ContestRepository(db)
-        self.submissions = SubmissionRepository(db)
-        self.rating_history = RatingHistoryRepository(db)
-        self.contest_participations = ContestParticipationRepository(db)
+    def get_supported_platform(self) -> Platform:
+        """Return Codeforces as the supported platform."""
+        return Platform.CODEFORCES
 
     # ============================================================
     # PUBLIC API
@@ -109,7 +90,7 @@ class CodeforcesSyncService(BaseService):
         """
 
         try:
-            profile = self._get_codeforces_profile(
+            profile = self._get_platform_profile(
                 profile_id,
                 user_id,
             )
@@ -263,31 +244,6 @@ class CodeforcesSyncService(BaseService):
     # PROFILE
     # ============================================================
 
-    def _get_codeforces_profile(
-        self,
-        profile_id: int,
-        user_id: int,
-    ) -> PlatformProfile:
-        profile = self.platform_profiles.get_by_id(profile_id)
-
-        if profile is None:
-            raise PlatformProfileNotFoundError(
-                f"Platform profile {profile_id} was not found."
-            )
-
-        if profile.user_id != user_id:
-            raise ProfileAccessDeniedError(
-                "You do not have permission to synchronize "
-                f"platform profile {profile_id}."
-            )
-
-        if profile.platform != Platform.CODEFORCES:
-            raise UnsupportedPlatformError(
-                f"Platform profile {profile_id} is not a Codeforces profile."
-            )
-
-        return profile
-
     def _fetch_remote_profile(
         self,
         username: str,
@@ -375,18 +331,6 @@ class CodeforcesSyncService(BaseService):
         )
 
         profile.is_connected = True
-
-    def _safe_add_and_flush(self, entity: Any) -> None:
-        """
-        Insert one entity inside a savepoint.
-
-        This lets the sync recover from unique-constraint races
-        without aborting the whole synchronization transaction.
-        """
-
-        with self.db.begin_nested():
-            self.db.add(entity)
-            self.db.flush()
 
     # ============================================================
     # SUBMISSIONS
@@ -850,58 +794,6 @@ class CodeforcesSyncService(BaseService):
         )
 
     # ============================================================
-    # AGGREGATES
-    # ============================================================
-
-    def _count_solved_problems(
-        self,
-        profile_id: int,
-    ) -> int:
-        """
-        Count distinct problems with at least one accepted
-        submission for this profile.
-        """
-
-        result = (
-            self.db.query(
-                func.count(
-                    distinct(Submission.problem_id)
-                )
-            )
-            .filter(
-                Submission.profile_id == profile_id,
-                Submission.status
-                == SubmissionStatus.ACCEPTED,
-            )
-            .scalar()
-        )
-
-        return int(result or 0)
-
-    def _count_contests_attended(
-        self,
-        profile_id: int,
-    ) -> int:
-        """Count distinct contests in which the profile participated."""
-
-        result = (
-            self.db.query(
-                func.count(
-                    distinct(
-                        ContestParticipation.contest_id
-                    )
-                )
-            )
-            .filter(
-                ContestParticipation.profile_id
-                == profile_id
-            )
-            .scalar()
-        )
-
-        return int(result or 0)
-
-    # ============================================================
     # MAPPINGS
     # ============================================================
 
@@ -978,105 +870,3 @@ class CodeforcesSyncService(BaseService):
             f"{index.lower()}-"
             f"{slugified_title or 'problem'}"
         )[:255]
-
-    # ============================================================
-    # VALIDATION HELPERS
-    # ============================================================
-
-    @staticmethod
-    def _as_mapping(
-        value: Any,
-        description: str,
-    ) -> Mapping[str, Any]:
-        if not isinstance(value, Mapping):
-            raise ValueError(
-                f"Malformed {description}: expected an object."
-            )
-
-        return value
-
-    @staticmethod
-    def _as_sequence(
-        value: Any,
-        description: str,
-    ) -> Sequence[Any]:
-        if isinstance(value, (str, bytes)):
-            raise ValueError(
-                f"Malformed {description}: expected a list."
-            )
-
-        if not isinstance(value, Sequence):
-            raise ValueError(
-                f"Malformed {description}: expected a list."
-            )
-
-        return value
-
-    @staticmethod
-    def _required_text(
-        value: Any,
-        field: str,
-    ) -> str:
-        if not isinstance(value, str) or not value.strip():
-            raise ValueError(
-                f"Malformed Codeforces data: "
-                f"{field} is required."
-            )
-
-        return value.strip()
-
-    @staticmethod
-    def _optional_text(
-        value: Any,
-        field: str,
-    ) -> str | None:
-        if value is None:
-            return None
-
-        return CodeforcesSyncService._required_text(
-            value,
-            field,
-        )
-
-    @staticmethod
-    def _required_int(
-        value: Any,
-        field: str,
-    ) -> int:
-        if isinstance(value, bool):
-            raise ValueError(
-                f"Malformed Codeforces data: "
-                f"{field} must be an integer."
-            )
-
-        try:
-            return int(value)
-        except (TypeError, ValueError) as exc:
-            raise ValueError(
-                f"Malformed Codeforces data: "
-                f"{field} must be an integer."
-            ) from exc
-
-    @staticmethod
-    def _optional_int(
-        value: Any,
-        field: str,
-    ) -> int | None:
-        if value is None:
-            return None
-
-        return CodeforcesSyncService._required_int(
-            value,
-            field,
-        )
-
-    @classmethod
-    def _utc_datetime(
-        cls,
-        timestamp: Any,
-        field: str,
-    ) -> datetime:
-        return datetime.fromtimestamp(
-            cls._required_int(timestamp, field),
-            tz=timezone.utc,
-        )

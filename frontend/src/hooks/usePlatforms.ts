@@ -2,8 +2,8 @@ import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { hasAccessToken } from "@/api/client";
-import { syncCodeforcesProfile, type SyncResult } from "@/api/dashboard";
-import { getMyPlatformProfiles } from "@/api/platform-profiles";
+import { syncPlatformProfile, type SyncResult } from "@/api/dashboard";
+import { getMyPlatformProfiles, type PlatformProfile } from "@/api/platform-profiles";
 
 export const platformQueryKeys = {
   profiles: ["platform-profiles", "me"] as const,
@@ -31,7 +31,8 @@ export function usePlatforms() {
   });
 
   const syncMutation = useMutation({
-    mutationFn: (profileId: number) => syncCodeforcesProfile(profileId),
+    mutationFn: ({ platform, profileId }: { platform: string; profileId: number }) =>
+      syncPlatformProfile(platform as any, profileId),
     onSuccess: () => {
       // Invalidate all relevant React Query data after a successful sync
       void queryClient.invalidateQueries({ queryKey: ["platform-profiles"] });
@@ -50,7 +51,8 @@ export function usePlatforms() {
     isLoading: profilesQuery.isLoading,
     error: profilesQuery.error,
     refetch: profilesQuery.refetch,
-    syncProfile: syncMutation.mutateAsync,
+    syncProfile: (profile: PlatformProfile) =>
+      syncMutation.mutateAsync({ platform: profile.platform, profileId: profile.id }),
     isSyncing: syncMutation.isPending,
     syncError: syncMutation.error,
     syncResult: syncMutation.data as SyncResult | undefined,

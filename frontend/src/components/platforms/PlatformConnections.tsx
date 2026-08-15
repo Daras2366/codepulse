@@ -44,16 +44,19 @@ function ProfileCard({
   showSyncResult,
 }: {
   profile: PlatformProfile;
-  onSync: (id: number) => void;
+  onSync: (profile: PlatformProfile) => void;
   isSyncing: boolean;
   syncError: unknown;
   syncResult?: SyncResult;
   showSyncResult: boolean;
 }) {
   const isCodeforces = profile.platform === "codeforces";
-  const platformName = isCodeforces ? "Codeforces" : profile.platform;
-  const platformShort = isCodeforces ? "CF" : profile.platform.slice(0, 2).toUpperCase();
-  const tint = isCodeforces ? "bg-blue-soft" : "bg-muted";
+  const isLeetCode = profile.platform === "leetcode";
+  const canSync = isCodeforces || isLeetCode;
+  
+  const platformName = isCodeforces ? "Codeforces" : isLeetCode ? "LeetCode" : profile.platform;
+  const platformShort = isCodeforces ? "CF" : isLeetCode ? "LC" : profile.platform.slice(0, 2).toUpperCase();
+  const tint = isCodeforces ? "bg-blue-soft" : isLeetCode ? "bg-yellow-soft" : "bg-muted";
 
   return (
     <article className="surface-card lift group flex flex-col p-6">
@@ -148,12 +151,12 @@ function ProfileCard({
       ) : null}
 
       <div className="mt-6 flex flex-wrap gap-2.5">
-        {isCodeforces && (
+        {canSync && (
           <ActionButton
             variant="ghost"
             className="px-4 py-2"
             disabled={isSyncing}
-            onClick={() => onSync(profile.id)}
+            onClick={() => onSync(profile)}
           >
             <RefreshCw
               className={cn("h-3.5 w-3.5", isSyncing && "animate-spin")}
@@ -182,12 +185,20 @@ export function PlatformConnections() {
   const [syncingProfileId, setSyncingProfileId] = useState<number | null>(null);
   const [lastSyncedProfileId, setLastSyncedProfileId] = useState<number | null>(null);
 
-  const handleSync = async (profileId: number) => {
-    setSyncingProfileId(profileId);
+  // Filter out platforms from coming soon if user has a profile for them
+  const connectedPlatformNames = new Set(
+    profiles.map((p) => p.platform.toLowerCase())
+  );
+  const filteredComingSoonPlatforms = comingSoonPlatforms.filter(
+    (p) => !connectedPlatformNames.has(p.name.toLowerCase())
+  );
+
+  const handleSync = async (profile: PlatformProfile) => {
+    setSyncingProfileId(profile.id);
     setLastSyncedProfileId(null);
     try {
-      await syncProfile(profileId);
-      setLastSyncedProfileId(profileId);
+      await syncProfile(profile);
+      setLastSyncedProfileId(profile.id);
     } catch {
       // Error state captured by syncError hook
     } finally {
@@ -261,32 +272,38 @@ export function PlatformConnections() {
           </span>
         }
       >
-        <ul className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
-          {comingSoonPlatforms.map((p) => (
-            <li
-              key={p.name}
-              className="lift flex items-center gap-3 rounded-2xl border border-dashed border-border bg-muted/40 p-4"
-            >
-              <span
-                className={cn(
-                  "flex h-10 w-10 shrink-0 items-center justify-center rounded-xl text-label font-bold opacity-70",
-                  p.tint,
-                )}
-                aria-hidden
+        {filteredComingSoonPlatforms.length > 0 ? (
+          <ul className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
+            {filteredComingSoonPlatforms.map((p) => (
+              <li
+                key={p.name}
+                className="lift flex items-center gap-3 rounded-2xl border border-dashed border-border bg-muted/40 p-4"
               >
-                {p.short}
-              </span>
-              <div className="min-w-0 flex-1">
-                <p className="text-caption truncate font-semibold">{p.name}</p>
-                <p className="text-label truncate text-subtle">{p.note}</p>
-              </div>
-              <Pill tone="neutral" className="shrink-0">
-                <Lock className="h-3 w-3" strokeWidth={1.8} />
-                Soon
-              </Pill>
-            </li>
-          ))}
-        </ul>
+                <span
+                  className={cn(
+                    "flex h-10 w-10 shrink-0 items-center justify-center rounded-xl text-label font-bold opacity-70",
+                    p.tint,
+                  )}
+                  aria-hidden
+                >
+                  {p.short}
+                </span>
+                <div className="min-w-0 flex-1">
+                  <p className="text-caption truncate font-semibold">{p.name}</p>
+                  <p className="text-label truncate text-subtle">{p.note}</p>
+                </div>
+                <Pill tone="neutral" className="shrink-0">
+                  <Lock className="h-3 w-3" strokeWidth={1.8} />
+                  Soon
+                </Pill>
+              </li>
+            ))}
+          </ul>
+        ) : (
+          <p className="text-caption text-muted-foreground">
+            All available platforms are connected!
+          </p>
+        )}
       </Panel>
     </div>
   );
