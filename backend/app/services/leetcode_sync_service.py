@@ -141,7 +141,8 @@ class LeetCodeSyncService(BaseSyncService):
             # Update aggregates
             self.db.flush()
 
-            profile.problems_solved = self._count_solved_problems(profile.id)
+            # problems_solved is already set in _update_profile from API data
+            # Do NOT override with database count since we only sync recent submissions
             # contests_attended is already set in _update_profile from API data
             
             # Calculate max rating from history if available

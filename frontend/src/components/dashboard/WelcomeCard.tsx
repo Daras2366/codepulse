@@ -2,6 +2,7 @@ import { Link } from "@tanstack/react-router";
 import { RefreshCw, Target, Trophy } from "lucide-react";
 
 import type { DashboardOverview } from "@/api/dashboard";
+import type { Platform } from "@/api/dashboard";
 
 function formatLastSynced(lastSyncedAt: string | null) {
   if (!lastSyncedAt) return "Not synced yet";
@@ -12,9 +13,26 @@ function formatLastSynced(lastSyncedAt: string | null) {
   }).format(new Date(lastSyncedAt));
 }
 
-export function WelcomeCard({ overview }: { overview: DashboardOverview }) {
+export function WelcomeCard({
+  overview,
+  platform,
+}: {
+  overview: DashboardOverview;
+  platform?: Platform;
+}) {
   const ratingText = overview.current_rating?.toLocaleString() ?? "Unrated";
   const rankText = overview.rank ?? "No current rank";
+
+  const platformName =
+    platform === "leetcode"
+      ? "LeetCode"
+      : platform === "codeforces"
+        ? "Codeforces"
+        : platform === "codechef"
+          ? "CodeChef"
+          : platform === "atcoder"
+            ? "AtCoder"
+            : platform || "Platform";
 
   return (
     <section className="surface-card overflow-hidden">
@@ -22,11 +40,11 @@ export function WelcomeCard({ overview }: { overview: DashboardOverview }) {
         <div className="flex flex-col justify-between gap-8">
           <div>
             <span className="text-label inline-flex items-center gap-2 rounded-full bg-yellow-soft px-3 py-1 uppercase">
-              Codeforces profile
+              {platformName} profile
             </span>
             <h2 className="text-h2 mt-5">Welcome back, @{overview.username}.</h2>
             <p className="text-body mt-2 max-w-lg text-muted-foreground">
-              Your synced Codeforces record is ready to explore.
+              Your synced {platformName} record is ready to explore.
             </p>
           </div>
 

@@ -26,6 +26,9 @@ from app.schemas.analytics import (
     AnalyticsContestPerformanceResponse,
     AnalyticsDifficultyBucket,
     AnalyticsDifficultyDistributionResponse,
+    AggregateRatingPoint,
+    AggregateRatingProgressionResponse,
+    AggregateRatingSeries,
     AnalyticsRatingPoint,
     AnalyticsRatingProgressionResponse,
     AnalyticsSubmissionActivityResponse,
@@ -177,6 +180,32 @@ class AnalyticsService:
             contests_attended=len(contests),
             contests=contests,
         )
+
+    def get_aggregate_rating_progression(self, user_id: int) -> AggregateRatingProgressionResponse:
+        """Return rating history for all connected platforms for the user."""
+        from app.models.enums import Platform
+        
+        # Get all profiles for the user
+        profiles = self._profiles.get_by_user_id(user_id)
+        
+        series = []
+        for profile in profiles:
+            rows = self._repo.get_rating_history(profile.id)
+            history = [
+                AggregateRatingPoint(
+                    date=rating.recorded_at.isoformat() if rating.recorded_at else None,
+                    rating=rating.rating,
+                    platform=profile.platform.value,
+                )
+                for rating, contest in rows
+            ]
+            series.append(AggregateRatingSeries(
+                platform=profile.platform.value,
+                username=profile.username,
+                history=history,
+            ))
+        
+        return AggregateRatingProgressionResponse(series=series)
 
     # ------------------------------------------------------------------
     # Internal helpers

@@ -11,6 +11,7 @@ from app.core.database import get_db
 from app.core.deps import get_current_user
 from app.models.user import User
 from app.schemas.analytics import (
+    AggregateRatingProgressionResponse,
     AnalyticsContestPerformanceResponse,
     AnalyticsDifficultyDistributionResponse,
     AnalyticsRatingProgressionResponse,
@@ -113,3 +114,12 @@ def get_contest_performance(
         return _get_service(db).get_contest_performance(profile_id, current_user.id)
     except (AnalyticsProfileNotFoundError, AnalyticsProfileAccessDeniedError) as exc:
         _raise_analytics_error(exc)
+
+
+@router.get("/aggregate/rating-progression", response_model=AggregateRatingProgressionResponse)
+def get_aggregate_rating_progression(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Return rating history for all connected platforms for the authenticated user."""
+    return _get_service(db).get_aggregate_rating_progression(current_user.id)

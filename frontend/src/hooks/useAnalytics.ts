@@ -8,8 +8,10 @@ import {
   getAnalyticsRatingProgression,
   getAnalyticsSubmissionActivity,
   getAnalyticsSummary,
+  getAggregateRatingProgression,
 } from "@/api/analytics";
 import { getMyPlatformProfiles } from "@/api/platform-profiles";
+import type { Platform } from "@/api/dashboard";
 
 export const analyticsQueryKeys = {
   summary: (profileId: number) => ["analytics", profileId, "summary"] as const,
@@ -17,9 +19,12 @@ export const analyticsQueryKeys = {
   difficulty: (profileId: number) => ["analytics", profileId, "difficulty"] as const,
   rating: (profileId: number) => ["analytics", profileId, "rating"] as const,
   contests: (profileId: number) => ["analytics", profileId, "contests"] as const,
+  aggregateRating: ["analytics", "aggregate", "rating"] as const,
 };
 
-export function useAnalytics() {
+type SelectedPlatform = Platform | "all";
+
+export function useAnalytics(selectedPlatform?: SelectedPlatform) {
   const [authenticated, setAuthenticated] = useState(hasAccessToken);
 
   useEffect(() => {
@@ -39,38 +44,60 @@ export function useAnalytics() {
     enabled: authenticated,
   });
 
-  const profile = profilesQuery.data?.find((p) => p.platform === "codeforces");
+  // Auto-select platform based on availability and preference
+  const getSelectedProfile = () => {
+    if (!profilesQuery.data || profilesQuery.data.length === 0) return null;
+    
+    // If "all" is selected, return null to indicate aggregate mode
+    if (selectedPlatform === "all") return null;
+    
+    // If a platform is explicitly selected, use it
+    if (selectedPlatform) {
+      return profilesQuery.data.find((item) => item.platform === selectedPlatform) || null;
+    }
+    
+    // Default to Codeforces if available, otherwise first available
+    return profilesQuery.data.find((item) => item.platform === "codeforces") || profilesQuery.data[0];
+  };
+  
+  const profile = getSelectedProfile();
   const profileId = profile?.id;
   const enabled = authenticated && profileId !== undefined;
 
   const summary = useQuery({
-    queryKey: profileId ? analyticsQueryKeys.summary(profileId) : ["analytics", "summary"],
+    queryKey: analyticsQueryKeys.summary(profileId!),
     queryFn: () => getAnalyticsSummary(profileId!),
-    enabled,
+    enabled: enabled && profileId !== undefined,
   });
 
   const activity = useQuery({
-    queryKey: profileId ? analyticsQueryKeys.activity(profileId) : ["analytics", "activity"],
+    queryKey: analyticsQueryKeys.activity(profileId!),
     queryFn: () => getAnalyticsSubmissionActivity(profileId!),
-    enabled,
+    enabled: enabled && profileId !== undefined,
   });
 
   const difficulty = useQuery({
-    queryKey: profileId ? analyticsQueryKeys.difficulty(profileId) : ["analytics", "difficulty"],
+    queryKey: analyticsQueryKeys.difficulty(profileId!),
     queryFn: () => getAnalyticsDifficultyDistribution(profileId!),
-    enabled,
+    enabled: enabled && profileId !== undefined,
   });
 
   const rating = useQuery({
-    queryKey: profileId ? analyticsQueryKeys.rating(profileId) : ["analytics", "rating"],
+    queryKey: analyticsQueryKeys.rating(profileId!),
     queryFn: () => getAnalyticsRatingProgression(profileId!),
-    enabled,
+    enabled: enabled && profileId !== undefined,
   });
 
   const contests = useQuery({
-    queryKey: profileId ? analyticsQueryKeys.contests(profileId) : ["analytics", "contests"],
+    queryKey: analyticsQueryKeys.contests(profileId!),
     queryFn: () => getAnalyticsContestPerformance(profileId!),
-    enabled,
+    enabled: enabled && profileId !== undefined,
+  });
+
+  const aggregateRating = useQuery({
+    queryKey: analyticsQueryKeys.aggregateRating,
+    queryFn: getAggregateRatingProgression,
+    enabled: authenticated,
   });
 
   return {
@@ -83,5 +110,7 @@ export function useAnalytics() {
     difficulty,
     rating,
     contests,
+    aggregateRating,
+    isAggregateMode: selectedPlatform === "all",
   };
 }

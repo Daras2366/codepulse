@@ -116,3 +116,27 @@ class AnalyticsContestPerformanceResponse(BaseModel):
     profile_id: int
     contests_attended: int
     contests: list[AnalyticsContestEntry]
+
+
+# ---------------------------------------------------------------------------
+# Aggregate rating progression
+# ---------------------------------------------------------------------------
+
+
+class AggregateRatingPoint(BaseModel):
+    """A single rating point for aggregate view."""
+    date: str
+    rating: int
+    platform: str
+
+
+class AggregateRatingSeries(BaseModel):
+    """Rating history for one platform."""
+    platform: str
+    username: str
+    history: list[AggregateRatingPoint]
+
+
+class AggregateRatingProgressionResponse(BaseModel):
+    """Rating history for all connected platforms."""
+    series: list[AggregateRatingSeries]

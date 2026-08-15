@@ -11,6 +11,7 @@ import {
   getDashboardSubmissions,
 } from "@/api/dashboard";
 import { getMyPlatformProfiles } from "@/api/platform-profiles";
+import { getAggregateRatingProgression } from "@/api/analytics";
 
 export const dashboardQueryKeys = {
   profile: ["platform-profiles", "me"] as const,
@@ -19,9 +20,12 @@ export const dashboardQueryKeys = {
   problems: (profileId: number) => ["dashboard", profileId, "problems"] as const,
   submissions: (profileId: number) => ["dashboard", profileId, "submissions"] as const,
   contests: (profileId: number) => ["dashboard", profileId, "contests"] as const,
+  aggregateRating: ["dashboard", "aggregate", "rating"] as const,
 };
 
-export function useDashboard(selectedPlatform?: Platform) {
+type SelectedPlatform = Platform | "all";
+
+export function useDashboard(selectedPlatform?: SelectedPlatform) {
   const queryClient = useQueryClient();
   const [authenticated, setAuthenticated] = useState(hasAccessToken);
 
@@ -52,6 +56,9 @@ export function useDashboard(selectedPlatform?: Platform) {
   const getSelectedProfile = () => {
     if (!profiles.data || profiles.data.length === 0) return null;
     
+    // If "all" is selected, return null to indicate aggregate mode
+    if (selectedPlatform === "all") return null;
+    
     // If a platform is explicitly selected, use it
     if (selectedPlatform) {
       return profiles.data.find((item) => item.platform === selectedPlatform) || null;
@@ -66,37 +73,55 @@ export function useDashboard(selectedPlatform?: Platform) {
   const enabled = profileId !== undefined;
 
   const overview = useQuery({
-    queryKey:
-      profileId === undefined ? ["dashboard", "overview"] : dashboardQueryKeys.overview(profileId),
+    queryKey: dashboardQueryKeys.overview(profileId!),
     queryFn: () => getDashboardOverview(profileId!),
-    enabled,
+    enabled: enabled && profileId !== undefined,
   });
   const rating = useQuery({
-    queryKey:
-      profileId === undefined ? ["dashboard", "rating"] : dashboardQueryKeys.rating(profileId),
+    queryKey: dashboardQueryKeys.rating(profileId!),
     queryFn: () => getDashboardRating(profileId!),
-    enabled,
+    enabled: enabled && profileId !== undefined,
   });
   const problems = useQuery({
-    queryKey:
-      profileId === undefined ? ["dashboard", "problems"] : dashboardQueryKeys.problems(profileId),
+    queryKey: dashboardQueryKeys.problems(profileId!),
     queryFn: () => getDashboardProblems(profileId!),
-    enabled,
+    enabled: enabled && profileId !== undefined,
   });
   const submissions = useQuery({
-    queryKey:
-      profileId === undefined
-        ? ["dashboard", "submissions"]
-        : dashboardQueryKeys.submissions(profileId),
+    queryKey: dashboardQueryKeys.submissions(profileId!),
     queryFn: () => getDashboardSubmissions(profileId!),
-    enabled,
+    enabled: enabled && profileId !== undefined,
   });
   const contests = useQuery({
-    queryKey:
-      profileId === undefined ? ["dashboard", "contests"] : dashboardQueryKeys.contests(profileId),
+    queryKey: dashboardQueryKeys.contests(profileId!),
     queryFn: () => getDashboardContests(profileId!),
-    enabled,
+    enabled: enabled && profileId !== undefined,
   });
+
+  const aggregateRating = useQuery({
+    queryKey: dashboardQueryKeys.aggregateRating,
+    queryFn: getAggregateRatingProgression,
+    enabled: authenticated && selectedPlatform === "all",
+  });
+
+  // Calculate aggregate statistics for "All Platforms"
+  const aggregateStats = profiles.data ? {
+    totalProblemsSolved: profiles.data.reduce((sum, p) => sum + p.problems_solved, 0),
+    totalContestsAttended: profiles.data.reduce((sum, p) => sum + p.contests_attended, 0),
+    totalSubmissions: profiles.data.reduce((sum, p) => {
+      // This would need to be calculated from actual submissions, but for now use 0
+      return sum; 
+    }, 0),
+    platformCount: profiles.data.length,
+    platforms: profiles.data.map(p => ({
+      platform: p.platform,
+      username: p.username,
+      problemsSolved: p.problems_solved,
+      contestsAttended: p.contests_attended,
+      currentRating: p.current_rating,
+      maxRating: p.max_rating,
+    })),
+  } : null;
 
   return {
     authenticated,
@@ -107,6 +132,9 @@ export function useDashboard(selectedPlatform?: Platform) {
     problems,
     submissions,
     contests,
+    aggregateRating,
+    aggregateStats,
+    isAggregateMode: selectedPlatform === "all",
     refresh: () => queryClient.invalidateQueries({ queryKey: ["dashboard", profileId] }),
   };
 }

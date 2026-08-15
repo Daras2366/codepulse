@@ -173,6 +173,7 @@ class DashboardService:
                 rating_change=participation.rating_change,
                 solved=participation.solved,
                 penalty=participation.penalty,
+                platform=contest.platform.value,
             )
             for participation, contest in self.dashboard.get_contest_history(
                 profile.id

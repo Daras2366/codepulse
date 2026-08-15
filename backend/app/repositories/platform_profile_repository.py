@@ -38,6 +38,10 @@ class PlatformProfileRepository(BaseRepository):
             .all()
         )
 
+    def get_by_user_id(self, user_id: int) -> List[PlatformProfile]:
+        """Alias for get_by_user for consistency."""
+        return self.get_by_user(user_id)
+
     def get_by_platform(
         self,
         user_id: int,

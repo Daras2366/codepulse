@@ -7,6 +7,9 @@ from sqlalchemy.pool import StaticPool
 
 import app.models  # noqa: F401 -- imports every mapped model
 from app.models.base import Base
+from app.models.contest import Contest
+from app.models.contest_participation import ContestParticipation
+from app.models.rating_history import RatingHistory
 from app.models.enums import Platform, Difficulty, SubmissionStatus
 from app.models.platform_profile import PlatformProfile
 from app.models.problem import Problem
@@ -109,7 +112,7 @@ class LeetCodeSyncServiceTests(TestCase):
             },
             "submitStats": {
                 "acSubmissionNum": [
-                    {"difficulty": "All", "count": 250}
+                    {"difficulty": "All", "count": 2}
                 ]
             },
         }
@@ -143,12 +146,12 @@ class LeetCodeSyncServiceTests(TestCase):
         self.assertEqual(result.problems_created, 2)
         self.assertEqual(result.submissions_created, 2)
         self.assertEqual(result.submissions_fetched, 2)
-        self.assertEqual(result.problems_solved, 2)  # Both submissions are accepted
+        self.assertEqual(result.problems_solved, 2)  # Should use API total
         self.assertEqual(result.contests_attended, 0)
 
         # Verify profile was updated
         self.session.refresh(self.profile)
-        self.assertEqual(self.profile.problems_solved, 2)
+        self.assertEqual(self.profile.problems_solved, 2)  # Should use API total
         self.assertEqual(self.profile.current_rating, 1800)  # Should be converted to int
         self.assertIsNotNone(self.profile.last_synced_at)
 
@@ -197,12 +200,12 @@ class LeetCodeSyncServiceTests(TestCase):
         )
 
         # First sync
-        result1 = service.sync_leetcode_profile(self.profile.id, self.user.id)
+        result1 = service.sync_profile(self.profile.id, self.user.id)
         self.assertEqual(result1.submissions_created, 1)
         self.assertEqual(result1.submissions_skipped, 0)
 
         # Second sync with same data
-        result2 = service.sync_leetcode_profile(self.profile.id, self.user.id)
+        result2 = service.sync_profile(self.profile.id, self.user.id)
         self.assertEqual(result2.submissions_created, 0)
         self.assertEqual(result2.submissions_skipped, 1)
 
@@ -236,7 +239,7 @@ class LeetCodeSyncServiceTests(TestCase):
         )
 
         with self.assertRaises((KeyError, ValueError)):
-            service.sync_leetcode_profile(self.profile.id, self.user.id)
+            service.sync_profile(self.profile.id, self.user.id)
 
         # Verify rollback: profile stats unchanged, no submissions created
         self.session.refresh(self.profile)
@@ -257,7 +260,7 @@ class LeetCodeSyncServiceTests(TestCase):
         )
 
         with self.assertRaises(LeetCodeSyncError):
-            service.sync_leetcode_profile(self.profile.id, self.user.id)
+            service.sync_profile(self.profile.id, self.user.id)
 
     def test_sync_updates_existing_problems(self):
         """Sync should not duplicate existing problems."""
@@ -403,7 +406,7 @@ class LeetCodeSyncServiceTests(TestCase):
 
         # Try to sync profile with wrong user_id
         with self.assertRaises(ProfileAccessDeniedError):
-            service.sync_leetcode_profile(self.profile.id, other_user.id)
+            service.sync_profile(self.profile.id, other_user.id)
 
     def test_nonexistent_profile_raises_not_found_error(self):
         """Sync should fail if profile doesn't exist."""
@@ -422,7 +425,7 @@ class LeetCodeSyncServiceTests(TestCase):
 
         # Try to sync non-existent profile
         with self.assertRaises(PlatformProfileNotFoundError):
-            service.sync_leetcode_profile(99999, self.user.id)
+            service.sync_profile(99999, self.user.id)
 
     def test_sync_result_contains_accurate_counts(self):
         """SyncResult should contain accurate counts of all operations."""
@@ -484,4 +487,136 @@ class LeetCodeSyncServiceTests(TestCase):
         self.assertEqual(result.submissions_created, 1)  # Only the new one
         self.assertEqual(result.submissions_skipped, 1)  # The duplicate
         self.assertEqual(result.problems_created, 1)  # Only add-two-numbers
-        self.assertEqual(result.problems_solved, 2)  # Both are accepted
+        self.assertEqual(result.problems_solved, 2)  # Should use API total
+
+    def test_leetcode_solved_count_from_api(self):
+        """LeetCode solved count should come from API submitStats, not submission count."""
+        profile_data = {
+            "profile": {},
+            "userContestRanking": None,
+            "submitStats": {
+                "acSubmissionNum": [
+                    {"difficulty": "All", "count": 500}
+                ]
+            },
+        }
+        # Only 2 recent submissions, but API says 500 solved
+        submissions_data = [
+            {
+                "timestamp": 1700000000,
+                "statusDisplay": "Accepted",
+                "lang": "Python3",
+                "titleSlug": "two-sum",
+                "title": "Two Sum",
+            },
+            {
+                "timestamp": 1700001000,
+                "statusDisplay": "Accepted",
+                "lang": "C++",
+                "titleSlug": "add-two-numbers",
+                "title": "Add Two Numbers",
+            },
+        ]
+
+        service = LeetCodeSyncService(
+            self.session,
+            FakeLeetCodeClient(profile_data, submissions_data),
+        )
+
+        result = service.sync_profile(self.profile.id, self.user.id)
+
+        # Should use API total (500), not submission count (2)
+        self.assertEqual(result.problems_solved, 500)
+        
+        # Verify profile was updated with API total
+        self.session.refresh(self.profile)
+        self.assertEqual(self.profile.problems_solved, 500)
+
+    def test_leetcode_contest_history_persistence(self):
+        """LeetCode contest history should be persisted correctly."""
+        rating_history_data = [
+            {
+                "attended": True,
+                "rating": 1600,
+                "ranking": 1000,
+                "trendDirection": "UP",
+                "problemsSolved": 3,
+                "totalProblems": 4,
+                "finishTimeInSeconds": 1700000000,
+                "contest": {
+                    "title": "Weekly Contest 300",
+                    "startTime": 1699980000,
+                }
+            },
+            {
+                "attended": True,
+                "rating": 1650,
+                "ranking": 800,
+                "trendDirection": "UP",
+                "problemsSolved": 2,
+                "totalProblems": 4,
+                "finishTimeInSeconds": 1700086400,
+                "contest": {
+                    "title": "Weekly Contest 301",
+                    "startTime": 1700070000,
+                }
+            }
+        ]
+
+        profile_data = {
+            "profile": {},
+            "userContestRanking": {
+                "rating": 1650,
+                "globalRanking": 800,
+                "attendedContestsCount": 2,
+            },
+            "submitStats": {"acSubmissionNum": [{"difficulty": "All", "count": 100}]},
+        }
+
+        service = LeetCodeSyncService(
+            self.session,
+            FakeLeetCodeClient(profile_data, [], rating_history_data),
+        )
+
+        result = service.sync_profile(self.profile.id, self.user.id)
+
+        # Verify contest participation was created
+        self.assertEqual(result.contest_participations_created, 2)
+        self.assertEqual(result.rating_history_created, 2)
+        self.assertEqual(result.contests_created, 2)
+
+        # Verify contests exist in database
+        contests = self.session.query(Contest).filter(
+            Contest.platform == Platform.LEETCODE
+        ).all()
+        self.assertEqual(len(contests), 2)
+
+        # Verify contest participations exist
+        participations = self.session.query(ContestParticipation).filter(
+            ContestParticipation.profile_id == self.profile.id
+        ).all()
+        self.assertEqual(len(participations), 2)
+
+        # Verify rating history exists
+        rating_histories = self.session.query(RatingHistory).filter(
+            RatingHistory.profile_id == self.profile.id
+        ).all()
+        self.assertEqual(len(rating_histories), 2)
+
+        # Verify idempotency - sync again should not create duplicates
+        result2 = service.sync_profile(self.profile.id, self.user.id)
+        self.assertEqual(result2.contest_participations_created, 0)
+        self.assertEqual(result2.rating_history_created, 0)
+        self.assertEqual(result2.contests_created, 0)
+
+        # Verify no duplicates were created
+        self.assertEqual(self.session.query(Contest).filter(
+            Contest.platform == Platform.LEETCODE
+        ).count(), 2)
+        self.assertEqual(self.session.query(ContestParticipation).filter(
+            ContestParticipation.profile_id == self.profile.id
+        ).count(), 2)
+
+if __name__ == "__main__":
+    import unittest
+    unittest.main()

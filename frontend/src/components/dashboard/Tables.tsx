@@ -19,6 +19,7 @@ type GenericContest = {
   rank: number | null;
   rating_change: number | null;
   solved?: number;
+  platform?: string;
 };
 
 export function ContestsTable({
@@ -43,7 +44,7 @@ export function ContestsTable({
           : new Intl.DateTimeFormat("en", { dateStyle: "medium" }).format(dateObj);
         return {
           name: contest.contest_name,
-          platform: "Codeforces",
+          platform: (contest as any).platform || "Codeforces",
           date: formattedDate,
           rank: contest.rank,
           delta: contest.rating_change,
@@ -54,11 +55,7 @@ export function ContestsTable({
   const rows = limit ? sourceRows.slice(0, limit) : sourceRows;
 
   return (
-    <Panel
-      title="Recent contests"
-      caption="Your synced Codeforces contest history"
-      bodyClassName="md:-mx-2"
-    >
+    <Panel title="Recent contests" caption="Your synced contest history" bodyClassName="md:-mx-2">
       {isLoading ? (
         <ListSkeleton rows={limit ?? 4} />
       ) : error ? (
@@ -66,7 +63,7 @@ export function ContestsTable({
       ) : rows.length === 0 ? (
         <EmptyState
           title="No contests yet"
-          description="Enter a rated Codeforces round and sync your profile to see it here."
+          description="Enter a rated contest and sync your profile to see it here."
         />
       ) : (
         <>
@@ -108,6 +105,7 @@ export function ContestsTable({
               <thead>
                 <tr className="text-label uppercase text-subtle">
                   <th className="px-4 pb-2 text-left font-normal">Contest</th>
+                  <th className="px-4 pb-2 text-left font-normal">Platform</th>
                   <th className="px-4 pb-2 text-left font-normal">Date</th>
                   <th className="px-4 pb-2 text-right font-normal">Rank</th>
                   <th className="px-4 pb-2 text-right font-normal">Δ Rating</th>
@@ -119,7 +117,9 @@ export function ContestsTable({
                   <tr key={`${c.name}-${index}`} className="group transition-colors">
                     <td className="rounded-l-2xl bg-transparent px-4 py-3.5 transition-colors group-hover:bg-muted">
                       <p className="text-caption font-semibold">{c.name}</p>
-                      <p className="text-label text-subtle">{c.platform}</p>
+                    </td>
+                    <td className="text-caption px-4 py-3.5 text-muted-foreground transition-colors group-hover:bg-muted">
+                      {c.platform}
                     </td>
                     <td className="text-caption px-4 py-3.5 text-muted-foreground transition-colors group-hover:bg-muted">
                       {c.date}

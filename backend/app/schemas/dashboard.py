@@ -92,6 +92,7 @@ class DashboardContestItem(BaseModel):
     rating_change: int | None
     solved: int
     penalty: int | None
+    platform: str
 
 
 class DashboardContestsResponse(BaseModel):

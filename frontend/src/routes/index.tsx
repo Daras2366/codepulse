@@ -50,10 +50,48 @@ function DashboardStatSkeletons() {
 function OverviewStats({
   overview,
   platformName,
+  aggregateStats,
 }: {
-  overview: DashboardOverview;
+  overview: DashboardOverview | null;
   platformName: string;
+  aggregateStats: any;
 }) {
+  // If aggregate mode, show aggregate statistics
+  if (aggregateStats) {
+    return (
+      <div className="grid gap-6 sm:grid-cols-2 xl:grid-cols-4">
+        <StatCard
+          label="Problems solved"
+          value={String(aggregateStats.totalProblemsSolved)}
+          note={`${aggregateStats.platformCount} platform${aggregateStats.platformCount !== 1 ? "s" : ""}`}
+          icon={Target}
+          tint="bg-blue-soft"
+        />
+        <StatCard
+          label="Contests attended"
+          value={String(aggregateStats.totalContestsAttended)}
+          note={`${aggregateStats.platformCount} platform${aggregateStats.platformCount !== 1 ? "s" : ""}`}
+          icon={RefreshCw}
+          tint="bg-pink-soft"
+        />
+        <StatCard
+          label="Connected platforms"
+          value={String(aggregateStats.platformCount)}
+          note="Total platforms linked"
+          icon={Trophy}
+          tint="bg-yellow-soft"
+        />
+        <StatCard
+          label="Platform breakdown"
+          value=""
+          note="See details below"
+          icon={ClipboardList}
+          tint="bg-violet-soft"
+        />
+      </div>
+    );
+  }
+
   return (
     <div className="grid gap-6 sm:grid-cols-2 xl:grid-cols-4">
       <StatCard
@@ -93,8 +131,8 @@ function OverviewStats({
 }
 
 function Dashboard() {
-  const [selectedPlatform, setSelectedPlatform] = useState<Platform | null>(null);
-  const dashboard = useDashboard(selectedPlatform);
+  const [selectedPlatform, setSelectedPlatform] = useState<Platform | "all" | null>(null);
+  const dashboard = useDashboard(selectedPlatform || undefined);
 
   // Get platform name for display
   const platformName =
@@ -103,6 +141,10 @@ function Dashboard() {
       : dashboard.profile?.platform === "codeforces"
         ? "Codeforces"
         : dashboard.profile?.platform || "Platform";
+
+  const subtitle = dashboard.isAggregateMode
+    ? "Your complete competitive programming progress."
+    : "Your synced competitive programming progress at a glance.";
 
   if (!dashboard.authenticated) {
     return (
@@ -134,7 +176,7 @@ function Dashboard() {
     );
   }
 
-  if (!dashboard.profile) {
+  if (!dashboard.profile && !dashboard.isAggregateMode) {
     return (
       <AppShell title="Dashboard" subtitle="Your synced competitive programming record.">
         <EmptyState
@@ -168,16 +210,30 @@ function Dashboard() {
   return (
     <AppShell
       title="Dashboard"
-      subtitle="Your synced competitive programming progress at a glance."
+      subtitle={
+        dashboard.isAggregateMode
+          ? "Your complete competitive programming progress."
+          : "Your synced competitive programming progress at a glance."
+      }
     >
       <div className="space-y-6">
         {/* Platform Selector */}
         {hasMultiplePlatforms && (
           <div className="flex gap-2">
+            <button
+              onClick={() => setSelectedPlatform("all")}
+              className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
+                selectedPlatform === "all"
+                  ? "bg-primary text-primary-foreground"
+                  : "bg-muted text-muted-foreground hover:bg-muted/80"
+              }`}
+            >
+              All Platforms
+            </button>
             {availablePlatforms.map((platform) => (
               <button
                 key={platform}
-                onClick={() => setSelectedPlatform(platform === selectedPlatform ? null : platform)}
+                onClick={() => setSelectedPlatform(selectedPlatform === platform ? null : platform)}
                 className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
                   (selectedPlatform === null && platform === dashboard.profile?.platform) ||
                   selectedPlatform === platform
@@ -195,62 +251,155 @@ function Dashboard() {
           </div>
         )}
 
-        {dashboard.overview.isLoading ? (
-          <DashboardStatSkeletons />
-        ) : overviewError ? (
-          <ErrorState description={overviewError} onRetry={() => dashboard.overview.refetch()} />
-        ) : dashboard.overview.data ? (
-          <>
-            <WelcomeCard overview={dashboard.overview.data} />
-            <OverviewStats overview={dashboard.overview.data} platformName={platformName} />
-          </>
-        ) : null}
-
-        <div className="grid gap-6 xl:grid-cols-[1.6fr_1fr]">
-          <RatingChart
-            compact
-            rating={dashboard.rating.data}
-            isLoading={dashboard.rating.isLoading}
-            error={ratingError}
-            onRetry={() => dashboard.rating.refetch()}
-          />
-          <TopicDonut
-            problems={dashboard.problems.data}
-            isLoading={dashboard.problems.isLoading}
-            error={problemsError}
-            onRetry={() => dashboard.problems.refetch()}
-          />
-        </div>
-
-        <Heatmap
-          activity={dashboard.submissions.data?.activity}
-          isLoading={dashboard.submissions.isLoading}
-          error={submissionsError}
-          onRetry={() => dashboard.submissions.refetch()}
-        />
-
-        <div className="grid gap-6 xl:grid-cols-[1.4fr_1fr]">
-          <ActivityTimeline
-            limit={5}
-            submissions={dashboard.submissions.data}
-            isLoading={dashboard.submissions.isLoading}
-            error={submissionsError}
-            onRetry={() => dashboard.submissions.refetch()}
-          />
-          <ContestsTable
-            limit={5}
-            contests={dashboard.contests.data}
-            isLoading={dashboard.contests.isLoading}
-            error={contestsError}
-            onRetry={() => dashboard.contests.refetch()}
-          />
-        </div>
-
-        {dashboard.overview.data && (
-          <div>
-            <h2 className="text-h3 mb-5">Platform</h2>
-            <PlatformCards overview={dashboard.overview.data} rating={dashboard.rating.data} />
+        {/* Aggregate Mode: Platform Breakdown */}
+        {dashboard.isAggregateMode && dashboard.aggregateStats && (
+          <div className="surface-card p-6">
+            <h2 className="text-h3 mb-4">Platform Breakdown</h2>
+            <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+              {dashboard.aggregateStats.platforms.map((platform) => (
+                <div key={platform.platform} className="border border-border rounded-xl p-4">
+                  <div className="flex items-center gap-2 mb-3">
+                    <span
+                      className={`text-caption font-bold px-2 py-1 rounded ${
+                        platform.platform === "leetcode"
+                          ? "bg-yellow-soft"
+                          : platform.platform === "codeforces"
+                            ? "bg-blue-soft"
+                            : "bg-muted"
+                      }`}
+                    >
+                      {platform.platform === "leetcode"
+                        ? "LC"
+                        : platform.platform === "codeforces"
+                          ? "CF"
+                          : platform.platform.slice(0, 2).toUpperCase()}
+                    </span>
+                    <span className="text-label capitalize">{platform.platform}</span>
+                  </div>
+                  <div className="space-y-2">
+                    <div className="flex justify-between">
+                      <span className="text-label text-subtle">Problems</span>
+                      <span className="text-caption font-semibold">{platform.problemsSolved}</span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-label text-subtle">Contests</span>
+                      <span className="text-caption font-semibold">
+                        {platform.contestsAttended}
+                      </span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-label text-subtle">Rating</span>
+                      <span className="text-caption font-semibold">
+                        {platform.currentRating ?? "Unrated"}
+                      </span>
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
           </div>
+        )}
+
+        {/* Single Platform Mode: Regular Dashboard */}
+        {!dashboard.isAggregateMode && (
+          <>
+            {dashboard.overview.isLoading ? (
+              <DashboardStatSkeletons />
+            ) : overviewError ? (
+              <ErrorState
+                description={overviewError}
+                onRetry={() => dashboard.overview.refetch()}
+              />
+            ) : dashboard.overview.data ? (
+              <>
+                <WelcomeCard
+                  overview={dashboard.overview.data}
+                  platform={dashboard.profile?.platform}
+                />
+                <OverviewStats
+                  overview={dashboard.overview.data}
+                  platformName={platformName}
+                  aggregateStats={null}
+                />
+              </>
+            ) : null}
+
+            <div className="grid gap-6 xl:grid-cols-[1.6fr_1fr]">
+              <RatingChart
+                compact
+                rating={dashboard.isAggregateMode ? undefined : dashboard.rating.data}
+                aggregateRating={
+                  dashboard.isAggregateMode ? dashboard.aggregateRating.data : undefined
+                }
+                platform={dashboard.profile?.platform}
+                isLoading={
+                  dashboard.isAggregateMode
+                    ? dashboard.aggregateRating.isLoading
+                    : dashboard.rating.isLoading
+                }
+                error={
+                  dashboard.isAggregateMode
+                    ? dashboard.aggregateRating.error
+                      ? getDashboardErrorMessage(dashboard.aggregateRating.error)
+                      : undefined
+                    : ratingError
+                }
+                onRetry={() => {
+                  if (dashboard.isAggregateMode) {
+                    dashboard.aggregateRating.refetch();
+                  } else {
+                    dashboard.rating.refetch();
+                  }
+                }}
+              />
+              <TopicDonut
+                problems={dashboard.problems.data}
+                isLoading={dashboard.problems.isLoading}
+                error={problemsError}
+                onRetry={() => dashboard.problems.refetch()}
+              />
+            </div>
+
+            <Heatmap
+              activity={dashboard.submissions.data?.activity}
+              isLoading={dashboard.submissions.isLoading}
+              error={submissionsError}
+              onRetry={() => dashboard.submissions.refetch()}
+            />
+
+            <div className="grid gap-6 xl:grid-cols-[1.4fr_1fr]">
+              <ActivityTimeline
+                limit={5}
+                submissions={dashboard.submissions.data}
+                isLoading={dashboard.submissions.isLoading}
+                error={submissionsError}
+                onRetry={() => dashboard.submissions.refetch()}
+              />
+              <ContestsTable
+                limit={5}
+                contests={dashboard.contests.data}
+                isLoading={dashboard.contests.isLoading}
+                error={contestsError}
+                onRetry={() => dashboard.contests.refetch()}
+              />
+            </div>
+
+            {dashboard.overview.data && (
+              <div>
+                <h2 className="text-h3 mb-5">Platform</h2>
+                <PlatformCards overview={dashboard.overview.data} rating={dashboard.rating.data} />
+              </div>
+            )}
+          </>
+        )}
+
+        {/* Aggregate Mode: Aggregate Statistics */}
+        {dashboard.isAggregateMode && dashboard.aggregateStats && (
+          <OverviewStats
+            overview={null}
+            platformName="All"
+            aggregateStats={dashboard.aggregateStats}
+          />
         )}
       </div>
     </AppShell>

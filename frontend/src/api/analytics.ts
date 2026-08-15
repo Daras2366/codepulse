@@ -77,6 +77,22 @@ export interface AnalyticsContestPerformance {
   contests: AnalyticsContestEntry[];
 }
 
+export interface AggregateRatingPoint {
+  date: string;
+  rating: number;
+  platform: string;
+}
+
+export interface AggregateRatingSeries {
+  platform: string;
+  username: string;
+  history: AggregateRatingPoint[];
+}
+
+export interface AggregateRatingProgression {
+  series: AggregateRatingSeries[];
+}
+
 export function getAnalyticsSummary(profileId: number) {
   return apiRequest<AnalyticsSummary>(`/analytics/${profileId}/summary`);
 }
@@ -97,4 +113,8 @@ export function getAnalyticsRatingProgression(profileId: number) {
 
 export function getAnalyticsContestPerformance(profileId: number) {
   return apiRequest<AnalyticsContestPerformance>(`/analytics/${profileId}/contest-performance`);
+}
+
+export function getAggregateRatingProgression() {
+  return apiRequest<AggregateRatingProgression>(`/analytics/aggregate/rating-progression`);
 }
