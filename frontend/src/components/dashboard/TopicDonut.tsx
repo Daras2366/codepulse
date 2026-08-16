@@ -12,11 +12,13 @@ const difficultyColors: Record<string, string> = {
 
 export function TopicDonut({
   problems,
+  platform,
   isLoading = false,
   error,
   onRetry,
 }: {
   problems?: DashboardProblems | undefined;
+  platform?: string | undefined;
   isLoading?: boolean;
   error?: string | undefined;
   onRetry?: (() => void) | undefined;

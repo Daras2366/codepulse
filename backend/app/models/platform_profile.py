@@ -57,11 +57,31 @@ class PlatformProfile(Base, TimestampMixin):
     problems_solved: Mapped[int] = mapped_column(
         Integer,
         default=0,
+        nullable=False,
+    )
+
+    solved_easy: Mapped[int] = mapped_column(
+        Integer,
+        default=0,
+        nullable=False,
+    )
+
+    solved_medium: Mapped[int] = mapped_column(
+        Integer,
+        default=0,
+        nullable=False,
+    )
+
+    solved_hard: Mapped[int] = mapped_column(
+        Integer,
+        default=0,
+        nullable=False,
     )
 
     contests_attended: Mapped[int] = mapped_column(
         Integer,
         default=0,
+        nullable=False,
     )
     
     profile_url: Mapped[str | None] = mapped_column(

@@ -84,6 +84,15 @@ def get_difficulty_distribution(
         _raise_analytics_error(exc)
 
 
+@router.get("/aggregate/rating-progression", response_model=AggregateRatingProgressionResponse)
+def get_aggregate_rating_progression(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Return rating history for all connected platforms for the authenticated user."""
+    return _get_service(db).get_aggregate_rating_progression(current_user.id)
+
+
 @router.get(
     "/{profile_id}/rating-progression",
     response_model=AnalyticsRatingProgressionResponse,
@@ -114,12 +123,3 @@ def get_contest_performance(
         return _get_service(db).get_contest_performance(profile_id, current_user.id)
     except (AnalyticsProfileNotFoundError, AnalyticsProfileAccessDeniedError) as exc:
         _raise_analytics_error(exc)
-
-
-@router.get("/aggregate/rating-progression", response_model=AggregateRatingProgressionResponse)
-def get_aggregate_rating_progression(
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-):
-    """Return rating history for all connected platforms for the authenticated user."""
-    return _get_service(db).get_aggregate_rating_progression(current_user.id)

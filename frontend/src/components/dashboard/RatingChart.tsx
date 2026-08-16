@@ -12,7 +12,7 @@ import {
   YAxis,
 } from "recharts";
 
-import type { AnalyticsRatingProgression } from "@/api/analytics";
+import type { AggregateRatingProgression, AnalyticsRatingProgression } from "@/api/analytics";
 import type { DashboardRating } from "@/api/dashboard";
 import { ActionButton, ChartSkeleton, EmptyState, ErrorState } from "@/components/ui-kit/motion";
 import { Panel } from "@/components/ui-kit/Panel";
@@ -86,7 +86,7 @@ export function RatingChart({
 }: {
   compact?: boolean;
   rating?: DashboardRating | AnalyticsRatingProgression | undefined;
-  aggregateRating?: any;
+  aggregateRating?: AggregateRatingProgression;
   platform?: string;
   isLoading?: boolean;
   error?: string | undefined;
@@ -99,46 +99,71 @@ export function RatingChart({
   let lines: any[] = [];
   let legend: any = null;
 
-  if (aggregateRating) {
-    // Aggregate mode: multiple lines for each platform
-    // New structure: { series: [{ platform, username, history: [{ date, rating, platform }] }] }
-    const allDates = new Set<string>();
+  if (aggregateRating?.series?.length) {
     const platformDataMap: Record<string, any> = {};
 
     aggregateRating.series.forEach((series: any) => {
       platformDataMap[series.platform] = series;
+    });
+
+    // Use the actual timestamp as the internal key.
+    // Never use "Feb 2026" / "Mar 2026" as the key because
+    // multiple contests can happen in the same month.
+    const allDates = new Set<number>();
+
+    aggregateRating.series.forEach((series: any) => {
       series.history.forEach((item: any) => {
-        allDates.add(formatDate(item.date));
+        const timestamp = normalizeDate(item.date).getTime();
+
+        if (!Number.isNaN(timestamp)) {
+          allDates.add(timestamp);
+        }
       });
     });
 
-    const sortedDates = Array.from(allDates).sort();
+    const sortedTimestamps = Array.from(allDates).sort((a, b) => a - b);
 
-    data = sortedDates.map((date) => {
-      const point: any = { date };
-      Object.keys(platformDataMap).forEach((platform) => {
-        const series = platformDataMap[platform];
-        const historyItem = series.history.find((h: any) => formatDate(h.date) === date);
+    data = sortedTimestamps.map((timestamp) => {
+      const point: Record<string, string | number | null> = {
+        timestamp,
+        date: formatDate(timestamp),
+      };
+
+      Object.entries(platformDataMap).forEach(([platform, series]: [string, any]) => {
+        const historyItem = series.history.find(
+          (item: any) => normalizeDate(item.date).getTime() === timestamp,
+        );
+
         point[platform] = historyItem ? historyItem.rating : null;
       });
+
       return point;
     });
 
-    lines = Object.keys(platformDataMap).map((platform) => (
-      <Line
-        key={platform}
-        type="monotone"
-        dataKey={platform}
-        name={platform.charAt(0).toUpperCase() + platform.slice(1)}
-        stroke={PLATFORM_COLORS[platform] || "var(--pastel-blue)"}
-        strokeWidth={2.5}
-        dot={false}
-        activeDot={{ r: 5, strokeWidth: 2, stroke: "var(--card)" }}
-        connectNulls={false}
-        animationDuration={900}
-        animationEasing="ease-out"
-      />
-    ));
+    lines = Object.keys(platformDataMap).map((platform) => {
+      const axisId = platform === "codeforces" ? "codeforces" : "leetcode";
+
+      return (
+        <Line
+          key={platform}
+          type="monotone"
+          dataKey={platform}
+          name={platform.charAt(0).toUpperCase() + platform.slice(1)}
+          stroke={PLATFORM_COLORS[platform] || "var(--pastel-blue)"}
+          strokeWidth={2.5}
+          dot={false}
+          activeDot={{
+            r: 5,
+            strokeWidth: 2,
+            stroke: "var(--card)",
+          }}
+          connectNulls
+          yAxisId={axisId}
+          animationDuration={900}
+          animationEasing="ease-out"
+        />
+      );
+    });
 
     legend = (
       <Legend
@@ -147,6 +172,7 @@ export function RatingChart({
         iconType="circle"
         formatter={(value: string) => {
           const platformName = value.charAt(0).toUpperCase() + value.slice(1);
+
           return <span className="text-caption text-subtle">{platformName}</span>;
         }}
       />
@@ -262,13 +288,29 @@ export function RatingChart({
                 tick={{ fill: "var(--subtle)", fontSize: 12 }}
                 dy={10}
               />
-              <YAxis
-                tickLine={false}
-                axisLine={false}
-                width={52}
-                tick={{ fill: "var(--subtle)", fontSize: 12 }}
-                domain={["dataMin - 120", "dataMax + 80"]}
-              />
+              {aggregateRating?.series?.some((series) => series.platform === "codeforces") && (
+                <YAxis
+                  yAxisId="codeforces"
+                  orientation="left"
+                  tickLine={false}
+                  axisLine={false}
+                  width={52}
+                  tick={{ fill: "var(--subtle)", fontSize: 12 }}
+                  domain={["dataMin - 120", "dataMax + 80"]}
+                />
+              )}
+
+              {aggregateRating?.series?.some((series) => series.platform === "leetcode") && (
+                <YAxis
+                  yAxisId="leetcode"
+                  orientation="right"
+                  tickLine={false}
+                  axisLine={false}
+                  width={52}
+                  tick={{ fill: "var(--subtle)", fontSize: 12 }}
+                  domain={["dataMin - 50", "dataMax + 50"]}
+                />
+              )}
               <Tooltip content={<ChartTooltip />} cursor={{ stroke: "var(--border)" }} />
               {legend}
               {lines}

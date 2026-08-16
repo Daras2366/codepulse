@@ -17,6 +17,8 @@ No raw SQLAlchemy queries inside this service.
 
 from sqlalchemy.orm import Session
 
+from app.models.enums import Difficulty
+
 from app.models.platform_profile import PlatformProfile
 from app.repositories.analytics_repository import AnalyticsRepository
 from app.repositories.platform_profile_repository import PlatformProfileRepository
@@ -116,14 +118,32 @@ class AnalyticsService:
         user_id: int,
     ) -> AnalyticsDifficultyDistributionResponse:
         profile = self._get_profile(profile_id, user_id)
-        rows = self._repo.get_solved_by_difficulty(profile.id)
-        buckets = [
-            AnalyticsDifficultyBucket(
-                difficulty=row.difficulty,
-                solved_count=int(row.solved_count),
-            )
-            for row in rows
-        ]
+
+        if profile.platform.value == "leetcode":
+            buckets = [
+                AnalyticsDifficultyBucket(
+                    difficulty=Difficulty.EASY,
+                    solved_count=int(profile.solved_easy),
+                ),
+                AnalyticsDifficultyBucket(
+                    difficulty=Difficulty.MEDIUM,
+                    solved_count=int(profile.solved_medium),
+                ),
+                AnalyticsDifficultyBucket(
+                    difficulty=Difficulty.HARD,
+                    solved_count=int(profile.solved_hard),
+                ),
+            ]
+        else:
+            rows = self._repo.get_solved_by_difficulty(profile.id)
+            buckets = [
+                AnalyticsDifficultyBucket(
+                    difficulty=row.difficulty,
+                    solved_count=int(row.solved_count),
+                )
+                for row in rows
+            ]
+
         return AnalyticsDifficultyDistributionResponse(
             profile_id=profile.id,
             solved_by_difficulty=buckets,

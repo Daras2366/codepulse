@@ -1,5 +1,7 @@
 from sqlalchemy.orm import Session
 
+from app.models.enums import Difficulty
+
 from app.models.platform_profile import PlatformProfile
 from app.repositories.dashboard_repository import DashboardRepository
 from app.repositories.platform_profile_repository import PlatformProfileRepository
@@ -43,7 +45,7 @@ class DashboardService:
             profile_id=profile.id,
             platform=profile.platform,
             username=profile.username,
-            total_problems_solved=int(submission_summary.solved_count),
+            total_problems_solved=int(profile.problems_solved),
             total_submissions=int(submission_summary.total_submissions),
             contests_attended=self.dashboard.get_contests_attended_count(profile.id),
             current_rating=profile.current_rating,
@@ -86,18 +88,34 @@ class DashboardService:
         user_id: int,
     ) -> DashboardProblemsResponse:
         profile = self._get_profile(profile_id, user_id)
-        summary = self.dashboard.get_submission_summary(profile.id)
-        solved_by_difficulty = [
-            DashboardDifficultyCount(
-                difficulty=row.difficulty,
-                solved_count=int(row.solved_count),
-            )
-            for row in self.dashboard.get_solved_by_difficulty(profile.id)
-        ]
+
+        if profile.platform.value == "leetcode":
+            solved_by_difficulty = [
+                DashboardDifficultyCount(
+                    difficulty=Difficulty.EASY,
+                    solved_count=int(profile.solved_easy),
+                ),
+                DashboardDifficultyCount(
+                    difficulty=Difficulty.MEDIUM,
+                    solved_count=int(profile.solved_medium),
+                ),
+                DashboardDifficultyCount(
+                    difficulty=Difficulty.HARD,
+                    solved_count=int(profile.solved_hard),
+                ),
+            ]
+        else:
+            solved_by_difficulty = [
+                DashboardDifficultyCount(
+                    difficulty=row.difficulty,
+                    solved_count=int(row.solved_count),
+                )
+                for row in self.dashboard.get_solved_by_difficulty(profile.id)
+            ]
 
         return DashboardProblemsResponse(
             profile_id=profile.id,
-            solved_count=int(summary.solved_count),
+            solved_count=int(profile.problems_solved),
             solved_by_difficulty=solved_by_difficulty,
         )
 

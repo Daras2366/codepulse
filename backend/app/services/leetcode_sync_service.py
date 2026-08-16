@@ -123,8 +123,36 @@ class LeetCodeSyncService(BaseSyncService):
                 submissions_created += int(submission_created)
                 submissions_skipped += int(submission_skipped_flag)
 
-            # Sync rating history and contest participation
+            # Sync rating history and contest participation.
+            # LeetCode may not return contest history in chronological order,
+            # so sort by contest start time before calculating rating changes.
+            remote_rating_history = sorted(
+                remote_rating_history,
+                key=lambda item: int(
+                    (item.get("contest") or {}).get("startTime") or 0
+                ),
+            )
+
+            previous_rating: int | None = None
+
             for rating_data in remote_rating_history:
+                # Only include contests the user actually attended.
+                if rating_data.get("attended") is False:
+                    continue
+
+                new_rating = rating_data.get("rating")
+
+                if new_rating is None:
+                    continue
+
+                new_rating = int(new_rating)
+
+                rating_change = (
+                    0
+                    if previous_rating is None
+                    else new_rating - previous_rating
+                )
+
                 (
                     contest_created,
                     rating_created,
@@ -132,11 +160,15 @@ class LeetCodeSyncService(BaseSyncService):
                 ) = self._sync_rating_event(
                     profile=profile,
                     rating_data=rating_data,
+                    old_rating=previous_rating,
+                    rating_change=rating_change,
                 )
 
                 contests_created += int(contest_created)
                 rating_history_created += int(rating_created)
                 participations_created += int(participation_created)
+
+                previous_rating = new_rating
 
             # Update aggregates
             self.db.flush()
@@ -248,19 +280,41 @@ class LeetCodeSyncService(BaseSyncService):
             if attended_count is not None:
                 profile.contests_attended = int(attended_count)
         
-        # Extract problems solved from submitStats
+        # Extract solved problem counts from LeetCode submitStats.
+        #
+        # LeetCode returns something like:
+        # [
+        #     {"difficulty": "All", "count": 362},
+        #     {"difficulty": "Easy", "count": 120},
+        #     {"difficulty": "Medium", "count": 210},
+        #     {"difficulty": "Hard", "count": 32},
+        # ]
+        #
+        # These are profile-level totals and are more reliable than
+        # counting our locally stored submissions because LeetCode's
+        # public recentSubmissionList is not the user's full history.
+
         submit_stats = remote_profile.get("submitStats", {})
         ac_submissions = submit_stats.get("acSubmissionNum", [])
-        
-        # Count total accepted problems (all difficulties)
-        total_solved = 0
+
+        solved_counts = {
+            "All": 0,
+            "Easy": 0,
+            "Medium": 0,
+            "Hard": 0,
+        }
+
         for difficulty_data in ac_submissions:
-            if difficulty_data.get("difficulty") == "All":
-                total_solved = difficulty_data.get("count", 0)
-                break
-        
-        # Assign the calculated solved count to profile
-        profile.problems_solved = total_solved
+            difficulty = difficulty_data.get("difficulty")
+            count = difficulty_data.get("count", 0)
+
+            if difficulty in solved_counts:
+                solved_counts[difficulty] = int(count or 0)
+
+        profile.problems_solved = solved_counts["All"]
+        profile.solved_easy = solved_counts["Easy"]
+        profile.solved_medium = solved_counts["Medium"]
+        profile.solved_hard = solved_counts["Hard"]
         
         # Update profile URL
         profile.profile_url = f"https://leetcode.com/{profile.username}"
@@ -471,6 +525,8 @@ class LeetCodeSyncService(BaseSyncService):
         self,
         profile: PlatformProfile,
         rating_data: dict[str, Any],
+        old_rating: int | None = None,
+        rating_change: int = 0,
     ) -> tuple[bool, bool, bool]:
         """
         Synchronize one LeetCode rating event.
@@ -504,10 +560,6 @@ class LeetCodeSyncService(BaseSyncService):
 
         # Convert to int for database compatibility
         new_rating = int(rating)
-        
-        # Calculate rating change (we don't have old rating, so estimate from previous)
-        # For LeetCode, we'll set rating_change to 0 if we can't determine it
-        rating_change = 0
 
         # Rating history
         rating_created = False
@@ -516,7 +568,10 @@ class LeetCodeSyncService(BaseSyncService):
             contest.id,
         )
 
-        recorded_at = self._parse_timestamp(rating_data.get("finishTimeInSeconds"))
+        # finishTimeInSeconds is the contest duration/finish offset,
+        # NOT a Unix timestamp. Use the contest start time for the
+        # rating-history date.
+        recorded_at = contest.start_time
 
         if existing_rating is None:
             rating = RatingHistory(
@@ -559,7 +614,7 @@ class LeetCodeSyncService(BaseSyncService):
                 profile_id=profile.id,
                 contest_id=contest.id,
                 rank=int(rank) if rank else None,
-                old_rating=None,  # LeetCode doesn't provide old rating
+                old_rating=old_rating,
                 new_rating=new_rating,
                 rating_change=rating_change,
                 solved=int(problems_solved) if problems_solved else 0,
@@ -584,6 +639,7 @@ class LeetCodeSyncService(BaseSyncService):
                 participation.solved = int(problems_solved) if problems_solved else 0
         else:
             participation.rank = int(rank) if rank else None
+            participation.old_rating = old_rating
             participation.new_rating = new_rating
             participation.rating_change = rating_change
             participation.solved = int(problems_solved) if problems_solved else 0

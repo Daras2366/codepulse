@@ -301,65 +301,48 @@ function Dashboard() {
         )}
 
         {/* Single Platform Mode: Regular Dashboard */}
+        {/* Rating + Difficulty */}
+        <div className="grid gap-6 xl:grid-cols-[1.6fr_1fr]">
+          <RatingChart
+            compact
+            rating={dashboard.isAggregateMode ? undefined : dashboard.rating.data}
+            aggregateRating={dashboard.isAggregateMode ? dashboard.aggregateRating.data : undefined}
+            platform={dashboard.isAggregateMode ? undefined : dashboard.profile?.platform}
+            isLoading={
+              dashboard.isAggregateMode
+                ? dashboard.aggregateRating.isLoading
+                : dashboard.rating.isLoading
+            }
+            error={
+              dashboard.isAggregateMode
+                ? dashboard.aggregateRating.error
+                  ? getDashboardErrorMessage(dashboard.aggregateRating.error)
+                  : undefined
+                : ratingError
+            }
+            onRetry={() => {
+              if (dashboard.isAggregateMode) {
+                dashboard.aggregateRating.refetch();
+              } else {
+                dashboard.rating.refetch();
+              }
+            }}
+          />
+
+          {!dashboard.isAggregateMode && (
+            <TopicDonut
+              problems={dashboard.problems.data}
+              platform={dashboard.profile?.platform}
+              isLoading={dashboard.problems.isLoading}
+              error={problemsError}
+              onRetry={() => dashboard.problems.refetch()}
+            />
+          )}
+        </div>
+
+        {/* Everything below remains single-platform only */}
         {!dashboard.isAggregateMode && (
           <>
-            {dashboard.overview.isLoading ? (
-              <DashboardStatSkeletons />
-            ) : overviewError ? (
-              <ErrorState
-                description={overviewError}
-                onRetry={() => dashboard.overview.refetch()}
-              />
-            ) : dashboard.overview.data ? (
-              <>
-                <WelcomeCard
-                  overview={dashboard.overview.data}
-                  platform={dashboard.profile?.platform}
-                />
-                <OverviewStats
-                  overview={dashboard.overview.data}
-                  platformName={platformName}
-                  aggregateStats={null}
-                />
-              </>
-            ) : null}
-
-            <div className="grid gap-6 xl:grid-cols-[1.6fr_1fr]">
-              <RatingChart
-                compact
-                rating={dashboard.isAggregateMode ? undefined : dashboard.rating.data}
-                aggregateRating={
-                  dashboard.isAggregateMode ? dashboard.aggregateRating.data : undefined
-                }
-                platform={dashboard.profile?.platform}
-                isLoading={
-                  dashboard.isAggregateMode
-                    ? dashboard.aggregateRating.isLoading
-                    : dashboard.rating.isLoading
-                }
-                error={
-                  dashboard.isAggregateMode
-                    ? dashboard.aggregateRating.error
-                      ? getDashboardErrorMessage(dashboard.aggregateRating.error)
-                      : undefined
-                    : ratingError
-                }
-                onRetry={() => {
-                  if (dashboard.isAggregateMode) {
-                    dashboard.aggregateRating.refetch();
-                  } else {
-                    dashboard.rating.refetch();
-                  }
-                }}
-              />
-              <TopicDonut
-                problems={dashboard.problems.data}
-                isLoading={dashboard.problems.isLoading}
-                error={problemsError}
-                onRetry={() => dashboard.problems.refetch()}
-              />
-            </div>
-
             <Heatmap
               activity={dashboard.submissions.data?.activity}
               isLoading={dashboard.submissions.isLoading}
@@ -375,6 +358,7 @@ function Dashboard() {
                 error={submissionsError}
                 onRetry={() => dashboard.submissions.refetch()}
               />
+
               <ContestsTable
                 limit={5}
                 contests={dashboard.contests.data}
