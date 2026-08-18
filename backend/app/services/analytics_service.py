@@ -15,22 +15,31 @@ All methods follow the same ownership guard pattern used by DashboardService:
 No raw SQLAlchemy queries inside this service.
 """
 
+from datetime import datetime
 from sqlalchemy.orm import Session
+from sqlalchemy import func, distinct, case
 
-from app.models.enums import Difficulty
+from app.models.enums import Difficulty, SubmissionStatus
 
 from app.models.platform_profile import PlatformProfile
 from app.repositories.analytics_repository import AnalyticsRepository
 from app.repositories.platform_profile_repository import PlatformProfileRepository
 from app.schemas.analytics import (
+    AggregateActivityDay,
+    AggregateDifficultyDistributionResponse,
+    AggregateDifficultyPoint,
+    AggregatePlatformDifficulty,
+    AggregateRatingPoint,
+    AggregateRatingProgressionResponse,
+    AggregateRatingSeries,
+    AggregateSubmissionActivityResponse,
+    AggregateTopicBreakdownResponse,
+    AggregateTopicPoint,
     AnalyticsActivityDay,
     AnalyticsContestEntry,
     AnalyticsContestPerformanceResponse,
     AnalyticsDifficultyBucket,
     AnalyticsDifficultyDistributionResponse,
-    AggregateRatingPoint,
-    AggregateRatingProgressionResponse,
-    AggregateRatingSeries,
     AnalyticsRatingPoint,
     AnalyticsRatingProgressionResponse,
     AnalyticsSubmissionActivityResponse,
@@ -60,6 +69,83 @@ class AnalyticsService:
     def __init__(self, db: Session) -> None:
         self._profiles = PlatformProfileRepository(db)
         self._repo = AnalyticsRepository(db)
+
+    # ------------------------------------------------------------------
+    # Topic normalization
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _normalize_topic_name(topic_name: str) -> str:
+        """Normalize topic names across platforms for consistent display.
+        
+        Handles variations like:
+        - "dp" vs "dynamic programming" vs "Dynamic Programming"
+        - "graphs" vs "graph" vs "Graph"
+        - "greedy" vs "greedy algorithms"
+        """
+        if not topic_name:
+            return topic_name
+        
+        normalized = topic_name.lower().strip()
+        
+        # Platform-specific normalizations
+        topic_mappings = {
+            # Dynamic programming variations
+            "dp": "Dynamic Programming",
+            "dynamic programming": "Dynamic Programming",
+            "dynamic-programming": "Dynamic Programming",
+            
+            # Graph variations
+            "graph": "Graphs",
+            "graphs": "Graphs",
+            
+            # Tree variations
+            "tree": "Trees",
+            "trees": "Trees",
+            
+            # String variations
+            "string": "Strings",
+            "strings": "Strings",
+            
+            # Math variations
+            "math": "Math",
+            "mathematics": "Math",
+            
+            # Greedy variations
+            "greedy": "Greedy",
+            "greedy algorithms": "Greedy",
+            
+            # Array variations
+            "array": "Arrays",
+            "arrays": "Arrays",
+            
+            # Other common variations
+            "binary search": "Binary Search",
+            "binarysearch": "Binary Search",
+            "sorting": "Sorting",
+            "data structures": "Data Structures",
+            "data structure": "Data Structures",
+            "implementation": "Implementation",
+            "constructive algorithms": "Constructive Algorithms",
+            "brute force": "Brute Force",
+            "dfs": "Depth First Search",
+            "depth first search": "Depth First Search",
+            "bfs": "Breadth First Search",
+            "breadth first search": "Breadth First Search",
+            "dp": "Dynamic Programming",
+            "number theory": "Number Theory",
+            "combinatorics": "Combinatorics",
+            "geometry": "Geometry",
+            "probabilities": "Probability",
+            "probability": "Probability",
+        }
+        
+        # Apply mapping if found
+        if normalized in topic_mappings:
+            return topic_mappings[normalized]
+        
+        # Title case for proper display
+        return topic_name.title()
 
     # ------------------------------------------------------------------
     # Public API
@@ -201,23 +287,29 @@ class AnalyticsService:
             contests=contests,
         )
 
-    def get_aggregate_rating_progression(self, user_id: int) -> AggregateRatingProgressionResponse:
-        """Return rating history for all connected platforms for the user."""
+    def get_aggregate_rating_progression(self, user_id: int, platforms: list[str] | None = None) -> AggregateRatingProgressionResponse:
+        """Return rating history for selected platforms for the user."""
         from app.models.enums import Platform
         
-        # Get all profiles for the user
+        # Get user's profiles filtered by selected platforms
         profiles = self._profiles.get_by_user_id(user_id)
+        if platforms:
+            platforms_enums = [Platform(p) for p in platforms]
+            profiles = [p for p in profiles if p.platform in platforms_enums]
         
         series = []
         for profile in profiles:
             rows = self._repo.get_rating_history(profile.id)
+            # Sort chronologically by recorded_at
+            sorted_rows = sorted(rows, key=lambda x: x[0].recorded_at if x[0].recorded_at else datetime.min)
+            
             history = [
                 AggregateRatingPoint(
                     date=rating.recorded_at.isoformat() if rating.recorded_at else None,
                     rating=rating.rating,
                     platform=profile.platform.value,
                 )
-                for rating, contest in rows
+                for rating, contest in sorted_rows
             ]
             series.append(AggregateRatingSeries(
                 platform=profile.platform.value,
@@ -225,7 +317,190 @@ class AnalyticsService:
                 history=history,
             ))
         
+        # Sort series chronologically within each series (already done above)
+        # and ensure the overall response has proper timestamps
         return AggregateRatingProgressionResponse(series=series)
+
+    def get_aggregate_topic_breakdown(
+        self, 
+        user_id: int, 
+        platforms: list[str] | None = None
+    ) -> AggregateTopicBreakdownResponse:
+        """Return topic breakdown for selected platforms."""
+        from app.models.enums import Platform
+        
+        # Get user's profiles filtered by selected platforms
+        profiles = self._profiles.get_by_user_id(user_id)
+        if platforms:
+            platforms_enums = [Platform(p) for p in platforms]
+            profiles = [p for p in profiles if p.platform in platforms_enums]
+        
+        profile_ids = [p.id for p in profiles]
+        platforms_enums = [p.platform for p in profiles]
+        
+        if not profile_ids:
+            return AggregateTopicBreakdownResponse(total_solved=0, tagged_solved=0, topics=[])
+        
+        # Call repository to get topic data
+        topic_rows, total_solved, tagged_solved = self._repo.get_aggregate_topic_breakdown(profile_ids, platforms_enums)
+        
+        # Apply topic normalization and group by normalized names
+        topic_groups: dict[str, int] = {}
+        for row in topic_rows:
+            normalized_name = self._normalize_topic_name(row.name)
+            topic_groups[normalized_name] = topic_groups.get(normalized_name, 0) + row.solved_count
+        
+        topics = [
+            AggregateTopicPoint(
+                topic=topic_name,
+                solved_count=count,
+                percentage=round((count / tagged_solved) * 100, 1) if tagged_solved > 0 else 0.0
+            )
+            for topic_name, count in sorted(topic_groups.items(), key=lambda x: x[1], reverse=True)
+        ]
+        
+        return AggregateTopicBreakdownResponse(total_solved=total_solved, tagged_solved=tagged_solved, topics=topics)
+
+    def get_aggregate_difficulty_distribution(
+        self, 
+        user_id: int, 
+        platforms: list[str] | None = None
+    ) -> AggregateDifficultyDistributionResponse:
+        """Return difficulty distribution for selected platforms."""
+        from app.models.enums import Platform, Difficulty
+        
+        # Get user's profiles filtered by selected platforms
+        profiles = self._profiles.get_by_user_id(user_id)
+        if platforms:
+            platforms_enums = [Platform(p) for p in platforms]
+            profiles = [p for p in profiles if p.platform in platforms_enums]
+        
+        if not profiles:
+            return AggregateDifficultyDistributionResponse(
+                total_solved=0, 
+                difficulties=[], 
+                platform_totals=[]
+            )
+        
+        # Aggregate difficulty counts across platforms
+        # For LeetCode, use profile-level solved_easy/solved_medium/solved_hard
+        # For Codeforces, use problem/submission data
+        platform_totals = []
+        total_easy = 0
+        total_medium = 0
+        total_hard = 0
+        
+        for profile in profiles:
+            if profile.platform == Platform.LEETCODE:
+                # LeetCode uses profile-level difficulty counts
+                easy = getattr(profile, 'solved_easy', 0) or 0
+                medium = getattr(profile, 'solved_medium', 0) or 0
+                hard = getattr(profile, 'solved_hard', 0) or 0
+                
+                total_easy += easy
+                total_medium += medium
+                total_hard += hard
+                
+                platform_totals.append(AggregatePlatformDifficulty(
+                    platform=profile.platform.value,
+                    easy=easy,
+                    medium=medium,
+                    hard=hard
+                ))
+            else:
+                # Codeforces and other platforms use problem/submission data
+                platform_difficulty = (
+                    self._repo.get_aggregate_difficulty_distribution([profile.id], [profile.platform])
+                )
+                
+                easy = sum(row.solved_count for row in platform_difficulty if row.difficulty == Difficulty.EASY)
+                medium = sum(row.solved_count for row in platform_difficulty if row.difficulty == Difficulty.MEDIUM)
+                hard = sum(row.solved_count for row in platform_difficulty if row.difficulty == Difficulty.HARD)
+                
+                total_easy += easy
+                total_medium += medium
+                total_hard += hard
+                
+                platform_totals.append(AggregatePlatformDifficulty(
+                    platform=profile.platform.value,
+                    easy=easy,
+                    medium=medium,
+                    hard=hard
+                ))
+        
+        total_solved = total_easy + total_medium + total_hard
+        
+        difficulties = []
+        if total_solved > 0:
+            if total_easy > 0:
+                difficulties.append(AggregateDifficultyPoint(
+                    difficulty="Easy",
+                    solved_count=total_easy,
+                    percentage=round((total_easy / total_solved) * 100, 1)
+                ))
+            if total_medium > 0:
+                difficulties.append(AggregateDifficultyPoint(
+                    difficulty="Medium",
+                    solved_count=total_medium,
+                    percentage=round((total_medium / total_solved) * 100, 1)
+                ))
+            if total_hard > 0:
+                difficulties.append(AggregateDifficultyPoint(
+                    difficulty="Hard",
+                    solved_count=total_hard,
+                    percentage=round((total_hard / total_solved) * 100, 1)
+                ))
+        
+        return AggregateDifficultyDistributionResponse(
+            total_solved=total_solved,
+            difficulties=difficulties,
+            platform_totals=platform_totals
+        )
+
+    def get_aggregate_submission_activity(
+        self, 
+        user_id: int, 
+        platforms: list[str] | None = None,
+        range_days: int | None = None
+    ) -> AggregateSubmissionActivityResponse:
+        """Return submission activity for selected platforms, optionally filtered by time range."""
+        from app.models.enums import Platform
+        from datetime import datetime, timedelta, date
+        
+        # Get user's profiles filtered by selected platforms
+        profiles = self._profiles.get_by_user_id(user_id)
+        if platforms:
+            platforms_enums = [Platform(p) for p in platforms]
+            profiles = [p for p in profiles if p.platform in platforms_enums]
+        
+        profile_ids = [p.id for p in profiles]
+        
+        if not profile_ids:
+            return AggregateSubmissionActivityResponse(total_submissions=0, activity=[])
+        
+        # Calculate date range
+        end_date = datetime.now().date()
+        if range_days:
+            start_date = end_date - timedelta(days=range_days)
+        else:
+            # Default to 1 year
+            start_date = end_date - timedelta(days=365)
+        
+        # Call repository to get activity data
+        activity_rows = self._repo.get_aggregate_submission_activity(profile_ids, start_date, end_date)
+        
+        total_submissions = sum(row.total for row in activity_rows)
+        
+        activity = [
+            AggregateActivityDay(
+                date=row.date,
+                total_submissions=row.total,
+                accepted_submissions=int(row.accepted or 0)
+            )
+            for row in activity_rows
+        ]
+        
+        return AggregateSubmissionActivityResponse(total_submissions=total_submissions, activity=activity)
 
     # ------------------------------------------------------------------
     # Internal helpers

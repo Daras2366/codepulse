@@ -18,6 +18,8 @@ from app.models.contest_participation import ContestParticipation
 from app.models.enums import Difficulty, Platform, SubmissionStatus
 from app.models.platform_profile import PlatformProfile
 from app.models.problem import Problem
+from app.models.topic import Topic
+from app.models.problem_topic import ProblemTopic
 from app.models.rating_history import RatingHistory
 from app.models.submission import Submission
 from app.schemas.sync import SyncResult
@@ -478,6 +480,7 @@ class CodeforcesSyncService(BaseSyncService):
         )
 
         if existing_problem is not None:
+            # Return existing problem without backfill to avoid unnecessary operations
             return existing_problem, False
 
         title = self._required_text(
@@ -506,6 +509,10 @@ class CodeforcesSyncService(BaseSyncService):
 
         try:
             self._safe_add_and_flush(problem)
+            
+            # Persist Codeforces problem tags only for new problems
+            self._sync_problem_tags(problem, problem_data)
+            
         except IntegrityError:
             existing_problem = (
                 self.problems.get_by_platform_problem_id(
@@ -521,6 +528,40 @@ class CodeforcesSyncService(BaseSyncService):
             return existing_problem, False
 
         return problem, True
+
+    def _sync_problem_tags(
+        self,
+        problem: Problem,
+        problem_data: Mapping[str, Any],
+    ) -> None:
+        """Sync Codeforces problem tags to Topic and ProblemTopic tables."""
+        tags = problem_data.get("tags", [])
+        if not tags:
+            return
+
+        for tag_name in tags:
+            # Get or create topic
+            topic = self.topics.get_by_name(tag_name)
+            if topic is None:
+                topic = Topic(name=tag_name)
+                try:
+                    self._safe_add_and_flush(topic)
+                except IntegrityError:
+                    # Topic might have been created by another process
+                    topic = self.topics.get_by_name(tag_name)
+                    if topic is None:
+                        return  # Skip this tag if we can't resolve the conflict
+
+            # Create ProblemTopic relationship
+            problem_topic = ProblemTopic(
+                problem_id=problem.id,
+                topic_id=topic.id,
+            )
+            try:
+                self._safe_add_and_flush(problem_topic)
+            except IntegrityError:
+                # Relationship already exists, which is fine
+                pass
 
     # ============================================================
     # CONTESTS

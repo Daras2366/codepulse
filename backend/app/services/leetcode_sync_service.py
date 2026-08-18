@@ -19,6 +19,8 @@ from app.models.contest_participation import ContestParticipation
 from app.models.enums import Difficulty, Platform, SubmissionStatus
 from app.models.platform_profile import PlatformProfile
 from app.models.problem import Problem
+from app.models.topic import Topic
+from app.models.problem_topic import ProblemTopic
 from app.models.rating_history import RatingHistory
 from app.models.submission import Submission
 from app.schemas.sync import SyncResult
@@ -27,6 +29,7 @@ from app.services.base_sync_service import (
     PlatformSyncError,
     PlatformUsernameNotFoundError,
 )
+from app.repositories.topic_repository import TopicRepository
 
 logger = logging.getLogger(__name__)
 
@@ -396,6 +399,7 @@ class LeetCodeSyncService(BaseSyncService):
         )
 
         if existing is not None:
+            # Return existing problem without backfill to avoid API request explosion
             return existing, False
 
         # Create new problem
@@ -416,7 +420,11 @@ class LeetCodeSyncService(BaseSyncService):
 
         try:
             self._safe_add_and_flush(problem)
-            return problem, True
+            
+            # Persist LeetCode problem topics only for new problems
+            # This avoids API request explosion during backfill
+            self._sync_problem_topics(problem, title_slug)
+            
         except IntegrityError:
             # Race condition - fetch existing
             existing = self.problems.get_by_platform_problem_id(
@@ -428,6 +436,53 @@ class LeetCodeSyncService(BaseSyncService):
                     "Failed to create problem due to database conflict."
                 ) from None
             return existing, False
+
+        return problem, True
+
+    def _sync_problem_topics(
+        self,
+        problem: Problem,
+        title_slug: str,
+    ) -> None:
+        """Sync LeetCode problem topics to Topic and ProblemTopic tables."""
+        try:
+            problem_details = self.client.fetch_problem_details(title_slug)
+            if not problem_details:
+                return
+            
+            topic_tags = problem_details.get("topicTags", [])
+            if not topic_tags:
+                return
+            
+            for tag_data in topic_tags:
+                tag_name = tag_data.get("name")
+                if not tag_name:
+                    continue
+                
+                # Get or create topic
+                topic = self.topics.get_by_name(tag_name)
+                if topic is None:
+                    topic = Topic(name=tag_name)
+                    try:
+                        self._safe_add_and_flush(topic)
+                    except IntegrityError:
+                        # Topic might have been created by another process
+                        topic = self.topics.get_by_name(tag_name)
+                        if topic is None:
+                            continue  # Skip this tag if we can't resolve the conflict
+                
+                # Create ProblemTopic relationship
+                problem_topic = ProblemTopic(
+                    problem_id=problem.id,
+                    topic_id=topic.id,
+                )
+                try:
+                    self._safe_add_and_flush(problem_topic)
+                except IntegrityError:
+                    # Relationship already exists, which is fine
+                    pass
+        except Exception as e:
+            logger.warning("Failed to sync topics for %s: %s", title_slug, e)
 
     def _get_difficulty_from_submission(
         self,

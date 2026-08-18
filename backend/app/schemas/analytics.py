@@ -140,3 +140,67 @@ class AggregateRatingSeries(BaseModel):
 class AggregateRatingProgressionResponse(BaseModel):
     """Rating history for all connected platforms."""
     series: list[AggregateRatingSeries]
+
+
+# ---------------------------------------------------------------------------
+# Aggregate topic breakdown
+# ---------------------------------------------------------------------------
+
+
+class AggregateTopicPoint(BaseModel):
+    """Topic count for aggregate view."""
+    topic: str
+    solved_count: int
+    percentage: float
+
+
+class AggregateTopicBreakdownResponse(BaseModel):
+    """Topic breakdown for selected platforms."""
+    total_solved: int
+    tagged_solved: int
+    topics: list[AggregateTopicPoint]
+
+
+# ---------------------------------------------------------------------------
+# Aggregate difficulty distribution
+# ---------------------------------------------------------------------------
+
+
+class AggregateDifficultyPoint(BaseModel):
+    """Difficulty count for aggregate view."""
+    difficulty: str
+    solved_count: int
+    percentage: float
+
+
+class AggregatePlatformDifficulty(BaseModel):
+    """Per-platform difficulty counts."""
+    platform: str
+    easy: int
+    medium: int
+    hard: int
+
+
+class AggregateDifficultyDistributionResponse(BaseModel):
+    """Difficulty distribution for selected platforms."""
+    total_solved: int
+    difficulties: list[AggregateDifficultyPoint]
+    platform_totals: list[AggregatePlatformDifficulty]
+
+
+# ---------------------------------------------------------------------------
+# Aggregate submission activity
+# ---------------------------------------------------------------------------
+
+
+class AggregateActivityDay(BaseModel):
+    """Submission counts for a single calendar day (aggregate)."""
+    date: date
+    total_submissions: int
+    accepted_submissions: int
+
+
+class AggregateSubmissionActivityResponse(BaseModel):
+    """Submission activity for selected platforms."""
+    total_submissions: int
+    activity: list[AggregateActivityDay]

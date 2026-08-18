@@ -1,7 +1,7 @@
 from typing import List
 
 from sqlalchemy.orm import Session
-
+from app.models.problem_topic import ProblemTopic
 from app.models.topic import Topic
 from app.repositories.base import BaseRepository
 
@@ -55,6 +55,15 @@ class TopicRepository(BaseRepository):
         return (
             self.db.query(Topic)
             .filter(Topic.id == topic_id)
+            .first()
+            is not None
+        )
+
+    def problem_has_topics(self, problem_id: int) -> bool:
+        """Check if a problem already has topic relationships."""
+        return (
+            self.db.query(ProblemTopic)
+            .filter(ProblemTopic.problem_id == problem_id)
             .first()
             is not None
         )

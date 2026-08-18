@@ -5,6 +5,7 @@
  * profile_id must belong to the current user.
  */
 import { apiRequest } from "@/api/client";
+import type { Platform } from "@/api/dashboard";
 
 export interface AnalyticsSummary {
   profile_id: number;
@@ -93,6 +94,48 @@ export interface AggregateRatingProgression {
   series: AggregateRatingSeries[];
 }
 
+export interface AggregateTopicPoint {
+  topic: string;
+  solved_count: number;
+  percentage: number;
+}
+
+export interface AggregateTopicBreakdown {
+  total_solved: number;
+  tagged_solved: number;
+  topics: AggregateTopicPoint[];
+}
+
+export interface AggregateDifficultyPoint {
+  difficulty: string;
+  solved_count: number;
+  percentage: number;
+}
+
+export interface AggregatePlatformDifficulty {
+  platform: string;
+  easy: number;
+  medium: number;
+  hard: number;
+}
+
+export interface AggregateDifficultyDistribution {
+  total_solved: number;
+  difficulties: AggregateDifficultyPoint[];
+  platform_totals: AggregatePlatformDifficulty[];
+}
+
+export interface AggregateActivityDay {
+  date: string;
+  total_submissions: number;
+  accepted_submissions: number;
+}
+
+export interface AggregateSubmissionActivity {
+  total_submissions: number;
+  activity: AggregateActivityDay[];
+}
+
 export function getAnalyticsSummary(profileId: number) {
   return apiRequest<AnalyticsSummary>(`/analytics/${profileId}/summary`);
 }
@@ -115,6 +158,31 @@ export function getAnalyticsContestPerformance(profileId: number) {
   return apiRequest<AnalyticsContestPerformance>(`/analytics/${profileId}/contest-performance`);
 }
 
-export function getAggregateRatingProgression() {
-  return apiRequest<AggregateRatingProgression>(`/analytics/aggregate/rating-progression`);
+export function getAggregateRatingProgression(platforms?: string[]) {
+  const params = new URLSearchParams();
+  if (platforms && platforms.length > 0) params.append("platforms", platforms.join(","));
+  const queryString = params.toString();
+  return apiRequest<AggregateRatingProgression>(`/analytics/aggregate/rating-progression${queryString ? `?${queryString}` : ""}`);
+}
+
+export function getAggregateTopicBreakdown(platforms?: string[]) {
+  const params = new URLSearchParams();
+  if (platforms && platforms.length > 0) params.append("platforms", platforms.join(","));
+  const queryString = params.toString();
+  return apiRequest<AggregateTopicBreakdown>(`/analytics/aggregate/topic-breakdown${queryString ? `?${queryString}` : ""}`);
+}
+
+export function getAggregateDifficultyDistribution(platforms?: string[]) {
+  const params = new URLSearchParams();
+  if (platforms && platforms.length > 0) params.append("platforms", platforms.join(","));
+  const queryString = params.toString();
+  return apiRequest<AggregateDifficultyDistribution>(`/analytics/aggregate/difficulty-distribution${queryString ? `?${queryString}` : ""}`);
+}
+
+export function getAggregateSubmissionActivity(platforms?: string[], rangeDays?: number) {
+  const params = new URLSearchParams();
+  if (platforms && platforms.length > 0) params.append("platforms", platforms.join(","));
+  if (rangeDays) params.append("range_days", rangeDays.toString());
+  const queryString = params.toString();
+  return apiRequest<AggregateSubmissionActivity>(`/analytics/aggregate/submission-activity${queryString ? `?${queryString}` : ""}`);
 }

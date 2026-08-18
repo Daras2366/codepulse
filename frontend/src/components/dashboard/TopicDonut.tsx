@@ -1,50 +1,57 @@
 import { Cell, Pie, PieChart, ResponsiveContainer, Tooltip, type TooltipProps } from "recharts";
 
-import type { DashboardProblems } from "@/api/dashboard";
+import type { AggregateTopicBreakdown } from "@/api/analytics";
 import { ChartSkeleton, EmptyState, ErrorState } from "@/components/ui-kit/motion";
 import { Panel } from "@/components/ui-kit/Panel";
 
-const difficultyColors: Record<string, string> = {
-  Easy: "var(--pastel-green)",
-  Medium: "var(--pastel-yellow)",
-  Hard: "var(--pastel-pink)",
+const TOPIC_COLORS: Record<string, string> = {
+  Arrays: "var(--pastel-blue)",
+  Graphs: "var(--pastel-green)",
+  Trees: "var(--pastel-yellow)",
+  DP: "var(--pastel-pink)",
+  Greedy: "var(--pastel-purple)",
+  Strings: "var(--pastel-orange)",
+  Math: "var(--pastel-red)",
+  "Binary Search": "var(--pastel-cyan)",
+  "Bit Manipulation": "var(--pastel-magenta)",
+  Recursion: "var(--pastel-lime)",
 };
 
 export function TopicDonut({
-  problems,
-  platform,
+  topicData,
   isLoading = false,
   error,
   onRetry,
 }: {
-  problems?: DashboardProblems | undefined;
-  platform?: string | undefined;
+  topicData?: AggregateTopicBreakdown | undefined;
   isLoading?: boolean;
   error?: string | undefined;
   onRetry?: (() => void) | undefined;
 }) {
-  const data = problems
-    ? problems.solved_by_difficulty.map((item) => ({
-        name: item.difficulty,
-        value: item.solved_count,
-        color: difficultyColors[item.difficulty] ?? "var(--pastel-blue)",
-      }))
-    : [];
-  const total = data.reduce((sum, item) => sum + item.value, 0);
+  const data =
+    topicData?.topics.map((item) => ({
+      name: item.topic,
+      value: item.solved_count,
+      color: TOPIC_COLORS[item.topic] || "var(--pastel-blue)",
+    })) || [];
+  const totalSolved = topicData?.total_solved || 0;
+  const taggedSolved = topicData?.tagged_solved || 0;
+  const total = taggedSolved; // Use tagged solved for the donut total
 
   return (
-    <Panel
-      title="Solved by difficulty"
-      caption="Accepted problems from your synced Codeforces history"
-    >
+    <Panel title="Topic breakdown" caption="Where your solved problems come from">
       {isLoading ? (
         <ChartSkeleton height={220} />
       ) : error ? (
         <ErrorState description={error} onRetry={onRetry} />
       ) : data.length === 0 ? (
         <EmptyState
-          title="No solved problems yet"
-          description="Sync your Codeforces profile after an accepted submission to see this breakdown."
+          title="No topics tagged yet"
+          description={
+            totalSolved > 0
+              ? `You have ${totalSolved} solved problems, but topic data is not available for them yet. Re-sync your profile to populate topic information.`
+              : "Solve problems with topic tags to see your topic distribution."
+          }
         />
       ) : (
         <div className="flex flex-col items-center gap-6 sm:flex-row sm:gap-8">
@@ -81,8 +88,10 @@ export function TopicDonut({
               </PieChart>
             </ResponsiveContainer>
             <div className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center">
-              <span className="text-h2">{total}</span>
-              <span className="text-label text-subtle">solved</span>
+              <span className="text-h2">{taggedSolved}</span>
+              <span className="text-label text-subtle">
+                {totalSolved > taggedSolved ? `of ${totalSolved} tagged` : "tagged"}
+              </span>
             </div>
           </div>
 

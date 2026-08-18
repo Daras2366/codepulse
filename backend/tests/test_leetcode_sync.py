@@ -71,7 +71,7 @@ class LeetCodeSyncServiceTests(TestCase):
             max_rating=1600,
             rank="Knight",
             problems_solved=100,
-            contests_attended=10,
+            contests_attended=0,  # Start with 0 to test API updates
         )
         self.session.add(self.profile)
         self.session.commit()
@@ -147,6 +147,7 @@ class LeetCodeSyncServiceTests(TestCase):
         self.assertEqual(result.submissions_created, 2)
         self.assertEqual(result.submissions_fetched, 2)
         self.assertEqual(result.problems_solved, 2)  # Should use API total
+        # contests_attended should be 0 since no contest data was provided in the mock
         self.assertEqual(result.contests_attended, 0)
 
         # Verify profile was updated

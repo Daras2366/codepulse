@@ -1,4 +1,4 @@
-import { useRef } from "react";
+import { useRef, useState } from "react";
 import { Download } from "lucide-react";
 import {
   CartesianGrid,
@@ -12,8 +12,9 @@ import {
   YAxis,
 } from "recharts";
 
-import type { AggregateRatingProgression, AnalyticsRatingProgression } from "@/api/analytics";
+import type { AggregateRatingProgression } from "@/api/analytics";
 import type { DashboardRating } from "@/api/dashboard";
+import type { Platform } from "@/api/dashboard";
 import { ActionButton, ChartSkeleton, EmptyState, ErrorState } from "@/components/ui-kit/motion";
 import { Panel } from "@/components/ui-kit/Panel";
 import { exportChartAsPng } from "@/lib/export-chart";
@@ -24,6 +25,14 @@ const PLATFORM_COLORS: Record<string, string> = {
   codechef: "var(--pastel-green)",
   atcoder: "var(--pastel-pink)",
 };
+
+const TIME_RANGES = [
+  { key: "7D", label: "7D", days: 7 },
+  { key: "30D", label: "30D", days: 30 },
+  { key: "90D", label: "90D", days: 90 },
+  { key: "1Y", label: "1Y", days: 365 },
+  { key: "All", label: "All", days: null },
+];
 
 /**
  * Normalize a date from various formats to a Date object.
@@ -63,16 +72,41 @@ function formatDate(dateInput: string | number): string {
 
 function ChartTooltip({ active, payload, label }: TooltipProps<number, string>) {
   if (!active || !payload?.length) return null;
+  const sorted = [...payload].sort((a, b) => (b.value ?? 0) - (a.value ?? 0));
+
+  // Format timestamp for display
+  let displayLabel = label;
+  if (typeof label === "number") {
+    displayLabel = formatDate(new Date(label));
+  }
+
   return (
     <div className="surface-card px-4 py-3">
-      <p className="text-label uppercase text-subtle">{label}</p>
-      {payload.map((entry, index) => (
-        <p key={index} className="text-caption mt-1 font-semibold" style={{ color: entry.color }}>
-          {entry.name}: {entry.value}
-        </p>
-      ))}
+      <p className="text-label uppercase text-subtle">{displayLabel}</p>
+      <div className="mt-2 space-y-1.5">
+        {sorted.map((p: any) => (
+          <div key={p.dataKey} className="flex items-center gap-2.5">
+            <span className="h-2 w-2 rounded-full" style={{ background: p.stroke }} />
+            <span className="text-caption text-muted-foreground">{p.name}</span>
+            <span className="text-caption ml-auto font-semibold text-foreground">{p.value}</span>
+          </div>
+        ))}
+      </div>
     </div>
   );
+}
+
+interface RatingChartProps {
+  compact?: boolean;
+  rating?: DashboardRating | undefined;
+  aggregateRating?: AggregateRatingProgression | undefined;
+  platform?: string;
+  availablePlatforms?: Platform[];
+  selectedPlatforms?: Platform[];
+  onPlatformChange?: (platforms: Platform[]) => void;
+  isLoading?: boolean;
+  error?: string | undefined;
+  onRetry?: (() => void) | undefined;
 }
 
 export function RatingChart({
@@ -80,90 +114,156 @@ export function RatingChart({
   rating,
   aggregateRating,
   platform,
+  availablePlatforms = [],
+  selectedPlatforms = [],
+  onPlatformChange,
   isLoading = false,
   error,
   onRetry,
-}: {
-  compact?: boolean;
-  rating?: DashboardRating | AnalyticsRatingProgression | undefined;
-  aggregateRating?: AggregateRatingProgression;
-  platform?: string;
-  isLoading?: boolean;
-  error?: string | undefined;
-  onRetry?: (() => void) | undefined;
-}) {
+}: RatingChartProps) {
+  const [timeRange, setTimeRange] = useState("1Y");
+  const [loading, setLoading] = useState(false);
+  const [hovered, setHovered] = useState<string | null>(null);
   const chartRef = useRef<HTMLDivElement | null>(null);
+  const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const rangeConfig = TIME_RANGES.find((r) => r.key === timeRange);
   const height = compact ? 260 : 360;
+
+  function changeRange(key: string) {
+    setTimeRange(key);
+    setLoading(true);
+    if (timer.current) clearTimeout(timer.current);
+    timer.current = setTimeout(() => setLoading(false), 420);
+  }
+
+  function togglePlatform(platform: Platform) {
+    if (!onPlatformChange) return;
+
+    if (selectedPlatforms.includes(platform)) {
+      // Don't allow deselecting the last platform
+      if (selectedPlatforms.length > 1) {
+        onPlatformChange(selectedPlatforms.filter((p) => p !== platform));
+      }
+    } else {
+      onPlatformChange([...selectedPlatforms, platform]);
+    }
+  }
+
+  function showAll() {
+    if (onPlatformChange && availablePlatforms.length > 0) {
+      onPlatformChange(availablePlatforms);
+    }
+  }
 
   let data: any[] = [];
   let lines: any[] = [];
   let legend: any = null;
 
-  if (aggregateRating?.series?.length) {
+  if (aggregateRating) {
+    // Aggregate mode: multiple lines for each platform with forward-fill
+    // New structure: { series: [{ platform, username, history: [{ date, rating, platform }] }] }
+
+    // Apply time range filtering
+    const now = new Date();
+    const cutoffDate = rangeConfig?.days
+      ? new Date(now.getTime() - rangeConfig.days * 24 * 60 * 60 * 1000)
+      : null;
+
+    // Collect all rating events with actual timestamps
+    const allEvents: Array<{ timestamp: Date; platform: string; rating: number }> = [];
     const platformDataMap: Record<string, any> = {};
 
     aggregateRating.series.forEach((series: any) => {
       platformDataMap[series.platform] = series;
-    });
-
-    // Use the actual timestamp as the internal key.
-    // Never use "Feb 2026" / "Mar 2026" as the key because
-    // multiple contests can happen in the same month.
-    const allDates = new Set<number>();
-
-    aggregateRating.series.forEach((series: any) => {
       series.history.forEach((item: any) => {
-        const timestamp = normalizeDate(item.date).getTime();
-
-        if (!Number.isNaN(timestamp)) {
-          allDates.add(timestamp);
+        const dateObj = normalizeDate(item.date);
+        // Filter by time range if specified
+        if (!cutoffDate || dateObj >= cutoffDate) {
+          allEvents.push({
+            timestamp: dateObj,
+            platform: series.platform,
+            rating: item.rating,
+          });
         }
       });
     });
 
-    const sortedTimestamps = Array.from(allDates).sort((a, b) => a - b);
+    // Sort all events chronologically
+    allEvents.sort((a, b) => a.timestamp.getTime() - b.timestamp.getTime());
 
-    data = sortedTimestamps.map((timestamp) => {
-      const point: Record<string, string | number | null> = {
-        timestamp,
-        date: formatDate(timestamp),
-      };
+    // Create timeline from union of all timestamps
+    const uniqueTimestamps = Array.from(new Set(allEvents.map((e) => e.timestamp.getTime()))).sort(
+      (a, b) => a - b,
+    );
 
-      Object.entries(platformDataMap).forEach(([platform, series]: [string, any]) => {
-        const historyItem = series.history.find(
-          (item: any) => normalizeDate(item.date).getTime() === timestamp,
+    // Build forward-filled data for each platform
+    const platformRatings: Record<string, number[]> = {};
+    const platformFirstEvent: Record<string, number> = {};
+
+    Object.keys(platformDataMap).forEach((platform) => {
+      platformRatings[platform] = [];
+      platformFirstEvent[platform] = -1;
+
+      // Sort this platform's events chronologically
+      const platformEvents = allEvents
+        .filter((e) => e.platform === platform)
+        .sort((a, b) => a.timestamp.getTime() - b.timestamp.getTime());
+
+      if (platformEvents.length > 0) {
+        platformFirstEvent[platform] = uniqueTimestamps.indexOf(
+          platformEvents[0].timestamp.getTime(),
         );
+      }
+    });
 
-        point[platform] = historyItem ? historyItem.rating : null;
+    // For each timestamp, forward-fill ratings
+    uniqueTimestamps.forEach((timestamp, index) => {
+      Object.keys(platformDataMap).forEach((platform) => {
+        const platformEvents = allEvents
+          .filter((e) => e.platform === platform)
+          .sort((a, b) => a.timestamp.getTime() - b.timestamp.getTime());
+
+        // Find the most recent rating event at or before this timestamp
+        let rating = null;
+        for (let i = platformEvents.length - 1; i >= 0; i--) {
+          if (platformEvents[i].timestamp.getTime() <= timestamp) {
+            rating = platformEvents[i].rating;
+            break;
+          }
+        }
+
+        platformRatings[platform].push(rating);
       });
+    });
 
+    // Build chart data with actual timestamps
+    data = uniqueTimestamps.map((timestamp, index) => {
+      const point: any = { timestamp };
+      Object.keys(platformDataMap).forEach((platform) => {
+        point[platform] = platformRatings[platform][index];
+      });
       return point;
     });
 
-    lines = Object.keys(platformDataMap).map((platform) => {
-      const axisId = platform === "codeforces" ? "codeforces" : "leetcode";
-
-      return (
-        <Line
-          key={platform}
-          type="monotone"
-          dataKey={platform}
-          name={platform.charAt(0).toUpperCase() + platform.slice(1)}
-          stroke={PLATFORM_COLORS[platform] || "var(--pastel-blue)"}
-          strokeWidth={2.5}
-          dot={false}
-          activeDot={{
-            r: 5,
-            strokeWidth: 2,
-            stroke: "var(--card)",
-          }}
-          connectNulls
-          yAxisId={axisId}
-          animationDuration={900}
-          animationEasing="ease-out"
-        />
-      );
-    });
+    lines = Object.keys(platformDataMap).map((platform) => (
+      <Line
+        key={platform}
+        type="monotone"
+        dataKey={platform}
+        name={platform.charAt(0).toUpperCase() + platform.slice(1)}
+        stroke={PLATFORM_COLORS[platform] || "var(--pastel-blue)"}
+        strokeWidth={hovered === platform ? 3.5 : 2.5}
+        strokeOpacity={hovered && hovered !== platform ? 0.35 : 1}
+        dot={false}
+        activeDot={{ r: 5, strokeWidth: 2, stroke: "var(--card)" }}
+        connectNulls={true}
+        animationDuration={900}
+        animationEasing="ease-out"
+        onMouseEnter={() => setHovered(platform)}
+        onMouseLeave={() => setHovered(null)}
+      />
+    ));
 
     legend = (
       <Legend
@@ -172,21 +272,22 @@ export function RatingChart({
         iconType="circle"
         formatter={(value: string) => {
           const platformName = value.charAt(0).toUpperCase() + value.slice(1);
-
           return <span className="text-caption text-subtle">{platformName}</span>;
         }}
       />
     );
   } else if (rating?.history) {
-    // Single platform mode
-    data = rating.history.map((item) => {
-      const rawDate = "recorded_at" in item ? item.recorded_at : item.date;
-      const formattedDate = formatDate(rawDate);
-      return {
-        date: formattedDate,
-        rating: item.rating,
-      };
-    });
+    // Single platform mode - use actual timestamps with forward-fill
+    data = rating.history
+      .map((item) => {
+        const rawDate = "recorded_at" in item ? item.recorded_at : item.date;
+        const dateObj = normalizeDate(rawDate);
+        return {
+          timestamp: dateObj.getTime(),
+          rating: item.rating,
+        };
+      })
+      .sort((a, b) => a.timestamp - b.timestamp);
 
     lines = [
       <Line
@@ -198,61 +299,102 @@ export function RatingChart({
         strokeWidth={2.5}
         dot={false}
         activeDot={{ r: 5, strokeWidth: 2, stroke: "var(--card)" }}
+        connectNulls={true}
         animationDuration={900}
         animationEasing="ease-out"
       />,
     ];
   }
 
+  const platformDisplayName =
+    platform === "leetcode"
+      ? "LeetCode"
+      : platform === "codeforces"
+        ? "Codeforces"
+        : platform === "codechef"
+          ? "CodeChef"
+          : platform === "atcoder"
+            ? "AtCoder"
+            : platform || "Platform";
+
   const title = aggregateRating
     ? "Rating progress across platforms"
     : rating
-      ? `${
-          platform === "leetcode"
-            ? "LeetCode"
-            : platform === "codeforces"
-              ? "Codeforces"
-              : platform === "codechef"
-                ? "CodeChef"
-                : platform === "atcoder"
-                  ? "AtCoder"
-                  : platform || "Platform"
-        } rating progress`
+      ? `${platformDisplayName} rating progress`
       : "Rating progress";
   const caption = aggregateRating
     ? "Rating changes from all your synced platforms"
     : rating
-      ? `Rating changes from your synced ${
-          platform === "leetcode"
-            ? "LeetCode"
-            : platform === "codeforces"
-              ? "Codeforces"
-              : platform === "codechef"
-                ? "CodeChef"
-                : platform === "atcoder"
-                  ? "AtCoder"
-                  : platform || "Platform"
-        } contests`
+      ? `Rating changes from your synced ${platformDisplayName} contests`
       : "Contest rating progress";
+
+  const shownPlatforms = availablePlatforms.filter((p) => selectedPlatforms.includes(p));
 
   return (
     <Panel
       title={title}
       caption={caption}
       action={
-        <ActionButton
-          variant="ghost"
-          className="px-4 py-1.5"
-          aria-label="Export chart as image"
-          onClick={() => exportChartAsPng(chartRef.current, "codepulse-rating-progress")}
-          disabled={isLoading || data.length === 0}
-        >
-          <Download className="h-3.5 w-3.5" strokeWidth={1.8} />
-          Export
-        </ActionButton>
+        <div className="flex flex-wrap items-center gap-2">
+          {TIME_RANGES.map((range) => (
+            <button
+              key={range.key}
+              onClick={() => changeRange(range.key)}
+              className={`px-3 py-1.5 rounded-lg text-sm font-medium transition-colors ${
+                timeRange === range.key
+                  ? "bg-primary text-primary-foreground"
+                  : "bg-muted text-muted-foreground hover:bg-muted/80"
+              }`}
+            >
+              {range.label}
+            </button>
+          ))}
+          <ActionButton
+            variant="ghost"
+            className="px-4 py-1.5"
+            aria-label="Export chart as image"
+            onClick={() => exportChartAsPng(chartRef.current, "codepulse-rating-progress")}
+            disabled={isLoading || data.length === 0}
+          >
+            <Download className="h-3.5 w-3.5" strokeWidth={1.8} />
+            Export
+          </ActionButton>
+        </div>
       }
     >
-      {isLoading ? (
+      {/* Platform Selector */}
+      {availablePlatforms.length > 1 && (
+        <div className="mb-6 flex flex-wrap gap-2">
+          {availablePlatforms.map((p) => {
+            const isSelected = selectedPlatforms.includes(p);
+            const displayName =
+              p === "leetcode"
+                ? "LeetCode"
+                : p === "codeforces"
+                  ? "Codeforces"
+                  : p === "codechef"
+                    ? "CodeChef"
+                    : p === "atcoder"
+                      ? "AtCoder"
+                      : p.charAt(0).toUpperCase() + p.slice(1);
+            return (
+              <button
+                key={p}
+                onClick={() => togglePlatform(p)}
+                className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
+                  isSelected
+                    ? "bg-primary text-primary-foreground"
+                    : "bg-muted text-muted-foreground hover:bg-muted/80"
+                }`}
+              >
+                {displayName}
+              </button>
+            );
+          })}
+        </div>
+      )}
+
+      {isLoading || loading ? (
         <ChartSkeleton height={height} />
       ) : error ? (
         <ErrorState description={error} onRetry={onRetry} />
@@ -271,6 +413,11 @@ export function RatingChart({
                       ? "AtCoder"
                       : platform || "Platform"
             } contest and sync your profile to see rating progress.`}
+            action={
+              shownPlatforms.length === 0 && availablePlatforms.length > 0 ? (
+                <ActionButton onClick={showAll}>Show all</ActionButton>
+              ) : undefined
+            }
           />
         </div>
       ) : (
@@ -282,38 +429,23 @@ export function RatingChart({
             >
               <CartesianGrid stroke="var(--border)" strokeDasharray="4 6" vertical={false} />
               <XAxis
-                dataKey="date"
+                dataKey="timestamp"
                 tickLine={false}
                 axisLine={false}
                 tick={{ fill: "var(--subtle)", fontSize: 12 }}
                 dy={10}
+                tickFormatter={(value) => formatDate(new Date(value))}
               />
-              {aggregateRating?.series?.some((series) => series.platform === "codeforces") && (
-                <YAxis
-                  yAxisId="codeforces"
-                  orientation="left"
-                  tickLine={false}
-                  axisLine={false}
-                  width={52}
-                  tick={{ fill: "var(--subtle)", fontSize: 12 }}
-                  domain={["dataMin - 120", "dataMax + 80"]}
-                />
-              )}
-
-              {aggregateRating?.series?.some((series) => series.platform === "leetcode") && (
-                <YAxis
-                  yAxisId="leetcode"
-                  orientation="right"
-                  tickLine={false}
-                  axisLine={false}
-                  width={52}
-                  tick={{ fill: "var(--subtle)", fontSize: 12 }}
-                  domain={["dataMin - 50", "dataMax + 50"]}
-                />
-              )}
+              <YAxis
+                tickLine={false}
+                axisLine={false}
+                width={52}
+                tick={{ fill: "var(--subtle)", fontSize: 12 }}
+                domain={["dataMin - 120", "dataMax + 80"]}
+              />
               <Tooltip content={<ChartTooltip />} cursor={{ stroke: "var(--border)" }} />
-              {legend}
               {lines}
+              {legend}
             </LineChart>
           </ResponsiveContainer>
         </div>

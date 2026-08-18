@@ -1,5 +1,6 @@
 import { useMemo, useState } from "react";
 
+import type { AggregateActivityDay } from "@/api/analytics";
 import type { AnalyticsActivityDay } from "@/api/analytics";
 import type { DashboardSubmissionActivity } from "@/api/dashboard";
 import { ChartSkeleton, EmptyState, ErrorState } from "@/components/ui-kit/motion";
@@ -21,6 +22,7 @@ function levelForCount(count: number, peak: number) {
 type GenericActivityItem =
   | DashboardSubmissionActivity
   | AnalyticsActivityDay
+  | AggregateActivityDay
   | { date?: string; activity_date?: string; total_submissions: number };
 
 function buildActivityHeatmap(activity: GenericActivityItem[] = []) {
@@ -61,23 +63,26 @@ function buildActivityHeatmap(activity: GenericActivityItem[] = []) {
 
 export function Heatmap({
   activity,
+  totalSubmissions,
   isLoading = false,
   error,
   onRetry,
 }: {
   activity?: GenericActivityItem[] | undefined;
+  totalSubmissions?: number;
   isLoading?: boolean;
   error?: string | undefined;
   onRetry?: (() => void) | undefined;
 }) {
   const weeks = useMemo(() => buildActivityHeatmap(activity), [activity]);
   const [hover, setHover] = useState<{ label: string; count: number } | null>(null);
-  const total = activity?.reduce((sum, item) => sum + item.total_submissions, 0) ?? 0;
+  const total =
+    totalSubmissions ?? activity?.reduce((sum, item) => sum + item.total_submissions, 0) ?? 0;
 
   return (
     <Panel
       title="Submission activity"
-      caption={`${total.toLocaleString()} submissions in your synced history`}
+      caption={`${total.toLocaleString()} submissions in the last year`}
       action={
         <div className="flex items-center gap-2">
           <span className="text-label text-subtle">Less</span>
@@ -95,7 +100,7 @@ export function Heatmap({
       ) : !activity || activity.length === 0 ? (
         <EmptyState
           title="No submission activity yet"
-          description="Sync your Codeforces profile after submitting a problem to see activity here."
+          description="Sync your platform profiles after submitting problems to see activity here."
         />
       ) : (
         <div className="relative">

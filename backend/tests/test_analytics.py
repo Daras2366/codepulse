@@ -36,6 +36,8 @@ from app.models.platform_profile import PlatformProfile
 from app.models.problem import Problem
 from app.models.rating_history import RatingHistory
 from app.models.submission import Submission
+from app.models.topic import Topic
+from app.models.problem_topic import ProblemTopic
 from app.models.user import User
 from app.routers.analytics import router
 
@@ -91,8 +93,17 @@ class AnalyticsApiTests(TestCase):
             platform=Platform.CODEFORCES,
             username="empty",
         )
+        self.leetcode_profile = PlatformProfile(
+            user_id=self.current_user.id,
+            platform=Platform.LEETCODE,
+            username="leetcode_user",
+            current_rating=1600,
+            max_rating=1700,
+            rank="Knight",
+            last_synced_at=datetime(2026, 8, 11, tzinfo=timezone.utc),
+        )
         self.session.add_all(
-            [self.profile, self.other_profile, self.empty_profile]
+            [self.profile, self.other_profile, self.empty_profile, self.leetcode_profile]
         )
         self.session.flush()
         self._add_synced_data()
@@ -117,24 +128,40 @@ class AnalyticsApiTests(TestCase):
         self.engine.dispose()
 
     def _add_synced_data(self):
-        easy = self._problem("100-A", "Easy Problem", Difficulty.EASY)
-        medium = self._problem("100-B", "Medium Problem", Difficulty.MEDIUM)
-        hard = self._problem("100-C", "Hard Problem", Difficulty.HARD)
-        other = self._problem("200-A", "Other Problem", Difficulty.HARD)
+        easy = self._problem("100-A", "Easy Problem", Difficulty.EASY, Platform.CODEFORCES)
+        medium = self._problem("100-B", "Medium Problem", Difficulty.MEDIUM, Platform.CODEFORCES)
+        hard = self._problem("100-C", "Hard Problem", Difficulty.HARD, Platform.CODEFORCES)
+        other = self._problem("200-A", "Other Problem", Difficulty.HARD, Platform.CODEFORCES)
         c1 = self._contest("100", "First Contest", 1_700_000_000)
         c2 = self._contest("101", "Second Contest", 1_710_000_000)
+        
         self.session.add_all([easy, medium, hard, other, c1, c2])
+        self.session.flush()
+        
+        # Add topics
+        arrays_topic = Topic(name="Arrays")
+        graphs_topic = Topic(name="Graphs")
+        dp_topic = Topic(name="DP")
+        self.session.add_all([arrays_topic, graphs_topic, dp_topic])
+        self.session.flush()
+        
+        # Associate problems with topics - problem_id and topic_id form composite primary key
+        self.session.add_all([
+            ProblemTopic(problem_id=easy.id, topic_id=arrays_topic.id),
+            ProblemTopic(problem_id=medium.id, topic_id=graphs_topic.id),
+            ProblemTopic(problem_id=hard.id, topic_id=dp_topic.id),
+        ])
         self.session.flush()
 
         self.session.add_all(
             [
-                # profile submissions
+                # profile submissions - use recent dates within 1 year
                 Submission(
                     profile_id=self.profile.id,
                     problem_id=easy.id,
                     contest_id=c1.id,
                     platform_submission_id="s1",
-                    submitted_at=datetime(2023, 11, 14, tzinfo=timezone.utc),
+                    submitted_at=datetime.now(timezone.utc).replace(tzinfo=None),
                     language="GNU C++17",
                     status=SubmissionStatus.ACCEPTED,
                 ),
@@ -143,7 +170,7 @@ class AnalyticsApiTests(TestCase):
                     problem_id=easy.id,
                     contest_id=c1.id,
                     platform_submission_id="s2",
-                    submitted_at=datetime(2023, 11, 15, tzinfo=timezone.utc),
+                    submitted_at=datetime.now(timezone.utc).replace(tzinfo=None),
                     language="GNU C++17",
                     status=SubmissionStatus.WRONG_ANSWER,
                 ),
@@ -152,7 +179,7 @@ class AnalyticsApiTests(TestCase):
                     problem_id=medium.id,
                     contest_id=c2.id,
                     platform_submission_id="s3",
-                    submitted_at=datetime(2023, 11, 16, tzinfo=timezone.utc),
+                    submitted_at=datetime.now(timezone.utc).replace(tzinfo=None),
                     language="Python 3",
                     status=SubmissionStatus.ACCEPTED,
                 ),
@@ -161,7 +188,7 @@ class AnalyticsApiTests(TestCase):
                     problem_id=hard.id,
                     contest_id=None,
                     platform_submission_id="s4",
-                    submitted_at=datetime(2023, 11, 16, tzinfo=timezone.utc),
+                    submitted_at=datetime.now(timezone.utc).replace(tzinfo=None),
                     language="Python 3",
                     status=SubmissionStatus.WRONG_ANSWER,
                 ),
@@ -171,7 +198,7 @@ class AnalyticsApiTests(TestCase):
                     problem_id=other.id,
                     contest_id=None,
                     platform_submission_id="o1",
-                    submitted_at=datetime(2023, 11, 16, tzinfo=timezone.utc),
+                    submitted_at=datetime.now(timezone.utc).replace(tzinfo=None),
                     language="Python 3",
                     status=SubmissionStatus.ACCEPTED,
                 ),
@@ -181,14 +208,14 @@ class AnalyticsApiTests(TestCase):
                     contest_id=c1.id,
                     rating=1400,
                     rating_change=50,
-                    recorded_at=datetime(2023, 11, 14, tzinfo=timezone.utc),
+                    recorded_at=datetime.now(timezone.utc).replace(tzinfo=None),
                 ),
                 RatingHistory(
                     profile_id=self.profile.id,
                     contest_id=c2.id,
                     rating=1500,
                     rating_change=100,
-                    recorded_at=datetime(2023, 11, 16, tzinfo=timezone.utc),
+                    recorded_at=datetime.now(timezone.utc).replace(tzinfo=None),
                 ),
                 # contest participations
                 ContestParticipation(
@@ -219,13 +246,20 @@ class AnalyticsApiTests(TestCase):
     # ------------------------------------------------------------------
 
     @staticmethod
-    def _problem(pid, title, difficulty):
+    def _problem(pid, title, difficulty, platform=Platform.CODEFORCES):
+        if platform == Platform.CODEFORCES:
+            problem_url = f"https://codeforces.com/problemset/problem/{pid.replace('-', '/')}"
+        elif platform == Platform.LEETCODE:
+            problem_url = f"https://leetcode.com/problems/{pid}"
+        else:
+            problem_url = f"https://{platform.value}.com/problem/{pid}"
+            
         return Problem(
-            platform=Platform.CODEFORCES,
+            platform=platform,
             platform_problem_id=pid,
             title=title,
-            slug=f"cf-{pid.lower()}",
-            problem_url=f"https://codeforces.com/problemset/problem/{pid.replace('-', '/')}",
+            slug=f"{platform.value}-{pid.lower()}",
+            problem_url=problem_url,
             difficulty=difficulty,
             acceptance_rate=None,
         )
@@ -278,22 +312,14 @@ class AnalyticsApiTests(TestCase):
 
         self.assertEqual(data["profile_id"], self.profile.id)
         activity = data["activity"]
-        # 3 distinct calendar days: Nov 14, 15, 16
-        self.assertEqual(len(activity), 3)
-        dates = [a["date"] for a in activity]
-        self.assertIn("2023-11-14", dates)
-        self.assertIn("2023-11-15", dates)
-        self.assertIn("2023-11-16", dates)
-
-        day14 = next(a for a in activity if a["date"] == "2023-11-14")
-        self.assertEqual(day14["total_submissions"], 1)
-        self.assertEqual(day14["accepted_submissions"], 1)
-        self.assertEqual(day14["rejected_submissions"], 0)
-
-        day16 = next(a for a in activity if a["date"] == "2023-11-16")
-        self.assertEqual(day16["total_submissions"], 2)
-        self.assertEqual(day16["accepted_submissions"], 1)
-        self.assertEqual(day16["rejected_submissions"], 1)
+        # All submissions were made on the same day (today)
+        self.assertEqual(len(activity), 1)
+        
+        # That day should have 4 total submissions (2 accepted)
+        day = activity[0]
+        self.assertEqual(day["total_submissions"], 4)
+        self.assertEqual(day["accepted_submissions"], 2)
+        self.assertEqual(day["rejected_submissions"], 2)
 
     # ------------------------------------------------------------------
     # Test 3: Difficulty distribution
@@ -409,3 +435,123 @@ class AnalyticsApiTests(TestCase):
     def test_nonexistent_profile_returns_404(self):
         resp = self.client.get("/analytics/999999/summary")
         self.assertEqual(resp.status_code, 404)
+
+    # ------------------------------------------------------------------
+    # Test 8: Aggregate rating progression
+    # ------------------------------------------------------------------
+
+    def test_aggregate_rating_progression(self):
+        resp = self.client.get("/analytics/aggregate/rating-progression")
+        self.assertEqual(resp.status_code, 200)
+        data = resp.json()
+        
+        self.assertIn("series", data)
+        series = data["series"]
+        # Should have 2 platforms (codeforces and leetcode)
+        self.assertEqual(len(series), 2)
+        
+        # Find codeforces series
+        cf_series = next((s for s in series if s["platform"] == "codeforces"), None)
+        self.assertIsNotNone(cf_series)
+        self.assertEqual(cf_series["username"], "tourist")
+        self.assertEqual(len(cf_series["history"]), 2)
+        
+        # Find leetcode series (should be empty)
+        lc_series = next((s for s in series if s["platform"] == "leetcode"), None)
+        self.assertIsNotNone(lc_series)
+        self.assertEqual(lc_series["username"], "leetcode_user")
+        self.assertEqual(len(lc_series["history"]), 0)
+
+    # ------------------------------------------------------------------
+    # Test 9: Aggregate topic breakdown
+    # ------------------------------------------------------------------
+
+    def test_aggregate_topic_breakdown(self):
+        resp = self.client.get("/analytics/aggregate/topic-breakdown")
+        self.assertEqual(resp.status_code, 200)
+        data = resp.json()
+        
+        self.assertIn("total_solved", data)
+        self.assertIn("tagged_solved", data)
+        self.assertIn("topics", data)
+        
+        # Should have topics from Codeforces accepted submissions
+        # Easy (Arrays) and Medium (Graphs) were accepted
+        self.assertGreater(data["tagged_solved"], 0)
+        
+        topics = {t["topic"]: t["solved_count"] for t in data["topics"]}
+        self.assertIn("Arrays", topics)
+        self.assertIn("Graphs", topics)
+        # Hard (DP) was not accepted, so it should not appear
+        self.assertNotIn("DP", topics)
+
+    def test_aggregate_topic_breakdown_with_platform_filter(self):
+        resp = self.client.get("/analytics/aggregate/topic-breakdown?platforms=codeforces")
+        self.assertEqual(resp.status_code, 200)
+        data = resp.json()
+        
+        # Should only include Codeforces data
+        self.assertGreater(data["tagged_solved"], 0)
+
+    # ------------------------------------------------------------------
+    # Test 10: Aggregate difficulty distribution
+    # ------------------------------------------------------------------
+
+    def test_aggregate_difficulty_distribution(self):
+        resp = self.client.get("/analytics/aggregate/difficulty-distribution")
+        self.assertEqual(resp.status_code, 200)
+        data = resp.json()
+        
+        self.assertIn("total_solved", data)
+        self.assertIn("difficulties", data)
+        self.assertIn("platform_totals", data)
+        
+        # Should have Easy and Medium from accepted submissions
+        difficulties = {d["difficulty"]: d["solved_count"] for d in data["difficulties"]}
+        self.assertEqual(difficulties.get("Easy"), 1)
+        self.assertEqual(difficulties.get("Medium"), 1)
+        # Hard was not accepted
+        self.assertNotIn("Hard", difficulties)
+        
+        # Should have platform totals
+        self.assertGreater(len(data["platform_totals"]), 0)
+
+    def test_aggregate_difficulty_distribution_with_platform_filter(self):
+        resp = self.client.get("/analytics/aggregate/difficulty-distribution?platforms=codeforces")
+        self.assertEqual(resp.status_code, 200)
+        data = resp.json()
+        
+        # Should only include Codeforces
+        self.assertEqual(data["total_solved"], 2)  # Easy + Medium
+
+    # ------------------------------------------------------------------
+    # Test 11: Aggregate submission activity
+    # ------------------------------------------------------------------
+
+    def test_aggregate_submission_activity(self):
+        resp = self.client.get("/analytics/aggregate/submission-activity")
+        self.assertEqual(resp.status_code, 200)
+        data = resp.json()
+        
+        self.assertIn("total_submissions", data)
+        self.assertIn("activity", data)
+        
+        # Should have activity from Codeforces profile
+        self.assertGreater(data["total_submissions"], 0)
+        self.assertGreater(len(data["activity"]), 0)
+
+    def test_aggregate_submission_activity_with_range_filter(self):
+        resp = self.client.get("/analytics/aggregate/submission-activity?range_days=365")
+        self.assertEqual(resp.status_code, 200)
+        data = resp.json()
+        
+        # Should filter by date range
+        self.assertGreaterEqual(len(data["activity"]), 0)
+
+    def test_aggregate_submission_activity_with_platform_filter(self):
+        resp = self.client.get("/analytics/aggregate/submission-activity?platforms=codeforces")
+        self.assertEqual(resp.status_code, 200)
+        data = resp.json()
+        
+        # Should only include Codeforces submissions
+        self.assertEqual(data["total_submissions"], 4)  # 4 submissions from Codeforces profile

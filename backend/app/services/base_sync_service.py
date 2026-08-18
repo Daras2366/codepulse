@@ -24,6 +24,7 @@ from app.repositories.platform_profile_repository import (
 from app.repositories.problem_repository import ProblemRepository
 from app.repositories.rating_history_repository import RatingHistoryRepository
 from app.repositories.submission_repository import SubmissionRepository
+from app.repositories.topic_repository import TopicRepository
 from app.schemas.sync import SyncResult
 from app.services.base import BaseService
 
@@ -66,6 +67,7 @@ class BaseSyncService(BaseService, ABC):
         self.submissions = SubmissionRepository(db)
         self.rating_history = RatingHistoryRepository(db)
         self.contest_participations = ContestParticipationRepository(db)
+        self.topics = TopicRepository(db)
 
     @abstractmethod
     def get_supported_platform(self) -> Platform:
