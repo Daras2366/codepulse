@@ -68,7 +68,7 @@ export function useAnalytics(selectedPlatforms: Platform[] = [], timeRange: Time
 
   // Aggregate queries (multi-platform)
   const aggregateRating = useQuery({
-    queryKey: analyticsQueryKeys.aggregateRating,
+    queryKey: analyticsQueryKeys.aggregateRating(activePlatforms),
     queryFn: () => getAggregateRatingProgression(activePlatforms),
     enabled: authenticated && activePlatforms.length > 0,
   });

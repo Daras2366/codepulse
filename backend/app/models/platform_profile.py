@@ -108,6 +108,12 @@ class PlatformProfile(Base, TimestampMixin):
         cascade="all, delete-orphan",
     )
     
+    topic_stats = relationship(
+        "PlatformTopicStat",
+        back_populates="profile",
+        cascade="all, delete-orphan",
+    )
+    
     contest_participations = relationship(
         "ContestParticipation",
         back_populates="profile",

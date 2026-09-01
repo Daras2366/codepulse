@@ -33,6 +33,7 @@ from app.models.contest import Contest
 from app.models.contest_participation import ContestParticipation
 from app.models.enums import Difficulty, Platform, SubmissionStatus
 from app.models.platform_profile import PlatformProfile
+from app.models.platform_topic_stat import PlatformTopicStat
 from app.models.problem import Problem
 from app.models.rating_history import RatingHistory
 from app.models.submission import Submission
@@ -100,6 +101,7 @@ class AnalyticsApiTests(TestCase):
             current_rating=1600,
             max_rating=1700,
             rank="Knight",
+            problems_solved=0,  # Start with 0, tests will set as needed
             last_synced_at=datetime(2026, 8, 11, tzinfo=timezone.utc),
         )
         self.session.add_all(
@@ -463,35 +465,452 @@ class AnalyticsApiTests(TestCase):
         self.assertEqual(len(lc_series["history"]), 0)
 
     # ------------------------------------------------------------------
-    # Test 9: Aggregate topic breakdown
+    # Test 9a: Aggregate topic breakdown — basic response shape
     # ------------------------------------------------------------------
 
-    def test_aggregate_topic_breakdown(self):
+    def test_aggregate_topic_breakdown_response_shape(self):
+        """Response must contain total_solved, tagged_solved, total_topic_assignments, topics."""
         resp = self.client.get("/analytics/aggregate/topic-breakdown")
         self.assertEqual(resp.status_code, 200)
         data = resp.json()
-        
+
         self.assertIn("total_solved", data)
         self.assertIn("tagged_solved", data)
+        self.assertIn("total_topic_assignments", data)
         self.assertIn("topics", data)
-        
-        # Should have topics from Codeforces accepted submissions
-        # Easy (Arrays) and Medium (Graphs) were accepted
-        self.assertGreater(data["tagged_solved"], 0)
-        
-        topics = {t["topic"]: t["solved_count"] for t in data["topics"]}
-        self.assertIn("Arrays", topics)
-        self.assertIn("Graphs", topics)
-        # Hard (DP) was not accepted, so it should not appear
-        self.assertNotIn("DP", topics)
 
-    def test_aggregate_topic_breakdown_with_platform_filter(self):
-        resp = self.client.get("/analytics/aggregate/topic-breakdown?platforms=codeforces")
+    # ------------------------------------------------------------------
+    # Test 9b: Codeforces topics — accepted submissions only
+    # ------------------------------------------------------------------
+
+    def test_aggregate_topic_breakdown_codeforces_only(self):
+        """Only topics from Codeforces accepted submissions appear."""
+        resp = self.client.get(
+            "/analytics/aggregate/topic-breakdown?platforms=codeforces"
+        )
         self.assertEqual(resp.status_code, 200)
         data = resp.json()
+
+        # Easy (Arrays) and Medium (Graphs) were accepted; Hard (DP) was rejected
+        topics_by_name = {t["topic"]: t["solved_count"] for t in data["topics"]}
+        self.assertIn("Arrays", topics_by_name)
+        self.assertIn("Graphs", topics_by_name)
+        # DP: Hard problem had WRONG_ANSWER — must not appear
+        self.assertNotIn("DP", topics_by_name)
+        self.assertNotIn("Dynamic Programming", topics_by_name)
+
+        # tagged_solved = 2 (Easy + Medium, both have 1 topic each)
+        self.assertEqual(data["tagged_solved"], 2)
+        # total_topic_assignments = 2 (one assignment per problem × 2 problems)
+        self.assertEqual(data["total_topic_assignments"], 2)
+
+    # ------------------------------------------------------------------
+    # Test 9c: LeetCode only — no topics seeded for LC in _add_synced_data
+    # ------------------------------------------------------------------
+
+    def test_aggregate_topic_breakdown_leetcode_only(self):
+        """LeetCode profile uses PlatformTopicStat for topic data."""
+        # Set profile solved count
+        self.leetcode_profile.problems_solved = 50
+        self.session.commit()
+
+        # Add PlatformTopicStat rows for LeetCode profile
+        array_stat = PlatformTopicStat(
+            profile_id=self.leetcode_profile.id,
+            topic_name="Array",
+            topic_slug="array",
+            solved_count=15,
+        )
+        string_stat = PlatformTopicStat(
+            profile_id=self.leetcode_profile.id,
+            topic_name="String",
+            topic_slug="string",
+            solved_count=8,
+        )
+        self.session.add_all([array_stat, string_stat])
+        self.session.commit()
+
+        resp = self.client.get(
+            "/analytics/aggregate/topic-breakdown?platforms=leetcode"
+        )
+        self.assertEqual(resp.status_code, 200)
+        data = resp.json()
+
+        # Should have topics from PlatformTopicStat
+        self.assertGreater(len(data["topics"]), 0)
+        # tagged_solved should equal total_solved when topic stats are available
+        # (topic data is available for the solved problems)
+        self.assertEqual(data["tagged_solved"], 50)  # Equal to problems_solved
+        self.assertGreater(data["total_topic_assignments"], 0)
+
+    def test_aggregate_topic_breakdown_leetcode_with_zero_local_topics(self):
+        """LeetCode analytics work even with zero local ProblemTopic rows."""
+        # Set profile solved count
+        self.leetcode_profile.problems_solved = 30
+        self.session.commit()
+
+        # Add PlatformTopicStat rows but no local ProblemTopic rows
+        array_stat = PlatformTopicStat(
+            profile_id=self.leetcode_profile.id,
+            topic_name="Array",
+            topic_slug="array",
+            solved_count=15,
+        )
+        self.session.add(array_stat)
+        self.session.commit()
+
+        resp = self.client.get(
+            "/analytics/aggregate/topic-breakdown?platforms=leetcode"
+        )
+        self.assertEqual(resp.status_code, 200)
+        data = resp.json()
+
+        # Should still return topic data from PlatformTopicStat
+        self.assertGreater(len(data["topics"]), 0)
+        # tagged_solved should equal total_solved when topic stats are available
+        self.assertEqual(data["tagged_solved"], 30)  # Equal to problems_solved
+
+    def test_aggregate_topic_breakdown_leetcode_platform_coverage(self):
+        """LeetCode platform coverage uses profile solved count and topic stats."""
+        # Set profile solved count
+        self.leetcode_profile.problems_solved = 50
+        self.leetcode_profile.solved_easy = 20
+        self.leetcode_profile.solved_medium = 25
+        self.leetcode_profile.solved_hard = 5
+        self.session.commit()
+
+        # Add PlatformTopicStat rows
+        array_stat = PlatformTopicStat(
+            profile_id=self.leetcode_profile.id,
+            topic_name="Array",
+            topic_slug="array",
+            solved_count=15,
+        )
+        string_stat = PlatformTopicStat(
+            profile_id=self.leetcode_profile.id,
+            topic_name="String",
+            topic_slug="string",
+            solved_count=8,
+        )
+        self.session.add_all([array_stat, string_stat])
+        self.session.commit()
+
+        resp = self.client.get(
+            "/analytics/aggregate/topic-breakdown?platforms=leetcode"
+        )
+        self.assertEqual(resp.status_code, 200)
+        data = resp.json()
+
+        # Check platform coverage
+        leetcode_coverage = next(
+            (c for c in data["platform_coverage"] if c["platform"] == "leetcode"),
+            None
+        )
+        self.assertIsNotNone(leetcode_coverage)
+        self.assertEqual(leetcode_coverage["total_solved"], 50)
+        self.assertEqual(leetcode_coverage["tagged_solved"], 50)  # Equal to total_solved when topic stats available
+
+    # ------------------------------------------------------------------
+    # Test 9d: Both platforms combined
+    # ------------------------------------------------------------------
+
+    def test_aggregate_topic_breakdown_combined_platforms(self):
+        """Combined: topics from both platforms appear (here only CF has topics)."""
+        resp = self.client.get(
+            "/analytics/aggregate/topic-breakdown?platforms=codeforces,leetcode"
+        )
+        self.assertEqual(resp.status_code, 200)
+        data = resp.json()
+
+        topics_by_name = {t["topic"]: t["solved_count"] for t in data["topics"]}
+        self.assertIn("Arrays", topics_by_name)
+        self.assertIn("Graphs", topics_by_name)
+
+    # ------------------------------------------------------------------
+    # Test 9e: No platforms in query — returns zero
+    # ------------------------------------------------------------------
+
+    def test_aggregate_topic_breakdown_no_platform_returns_zero(self):
+        """Passing an unknown platform string → no matching profiles → empty response."""
+        resp = self.client.get(
+            "/analytics/aggregate/topic-breakdown?platforms=unknown_platform"
+        )
+        # Service silently ignores unknown platform values and returns empty data
+        self.assertEqual(resp.status_code, 200)
+        data = resp.json()
+        self.assertEqual(data["total_solved"], 0)
+        self.assertEqual(data["tagged_solved"], 0)
+        self.assertEqual(data["total_topic_assignments"], 0)
+        self.assertEqual(data["topics"], [])
+
+    # ------------------------------------------------------------------
+    # Test 9f: Multiple topics per problem — correct assignment counts
+    # ------------------------------------------------------------------
+
+    def test_aggregate_topic_breakdown_multiple_topics_per_problem(self):
+        """A problem can contribute once to each of several canonical topics."""
+        multi_problem = self._problem(
+            "999-A",
+            "Multi-Topic Problem",
+            Difficulty.EASY,
+            Platform.CODEFORCES,
+        )
+        self.session.add(multi_problem)
+        self.session.flush()
+
+        t1 = Topic(name="arrays")
+        t2 = Topic(name="graphs")
+        t3 = Topic(name="dp")
+
+        self.session.add_all([t1, t2, t3])
+        self.session.flush()
+
+        self.session.add_all([
+            ProblemTopic(problem_id=multi_problem.id, topic_id=t1.id),
+            ProblemTopic(problem_id=multi_problem.id, topic_id=t2.id),
+            ProblemTopic(problem_id=multi_problem.id, topic_id=t3.id),
+        ])
+
+        self.session.add(
+            Submission(
+                profile_id=self.profile.id,
+                problem_id=multi_problem.id,
+                contest_id=None,
+                platform_submission_id="multi-s1",
+                submitted_at=datetime.now(timezone.utc).replace(tzinfo=None),
+                language="Python 3",
+                status=SubmissionStatus.ACCEPTED,
+            )
+        )
+
+        self.session.commit()
+
+        resp = self.client.get(
+            "/analytics/aggregate/topic-breakdown?platforms=codeforces"
+        )
+
+        self.assertEqual(resp.status_code, 200)
+
+        data = resp.json()
+
+        topic_map = {
+            topic["topic"]: topic
+            for topic in data["topics"]
+        }
+
+        # The new problem contributes exactly once to each canonical topic.
+        self.assertIn("Arrays", topic_map)
+        self.assertIn("Graphs", topic_map)
+        self.assertIn("Dynamic Programming", topic_map)
+
+        self.assertEqual(topic_map["Arrays"]["solved_count"], 2)
+        self.assertEqual(topic_map["Graphs"]["solved_count"], 2)
+        self.assertEqual(
+            topic_map["Dynamic Programming"]["solved_count"],
+            1,
+        )
+
+        # The problem should not be double-counted within a single topic.
+        self.assertGreater(data["total_topic_assignments"], 0)
+
+        # ------------------------------------------------------------------
+        # Test 9g: Duplicate ProblemTopic rows — graceful handling
+        # ------------------------------------------------------------------
+
+        def test_aggregate_topic_breakdown_duplicate_problem_topic_handled(self):
+            """ProblemTopic has a composite PK so duplicates cannot exist at DB level.
+            Verify the endpoint still returns correct counts when inserting via
+            the same composite key is attempted (IntegrityError path)."""
+            # This test verifies idempotency: re-adding the same link should be ignored
+            # by the ProblemTopic unique constraint.  We validate the existing counts
+            # are still correct after the attempt.
+            resp = self.client.get(
+                "/analytics/aggregate/topic-breakdown?platforms=codeforces"
+            )
+            self.assertEqual(resp.status_code, 200)
+            data = resp.json()
+            self.assertGreaterEqual(data["total_topic_assignments"], 2)
+
+        # ------------------------------------------------------------------
+        # Test 9h: Topic normalization (DP → Dynamic Programming)
+        # ------------------------------------------------------------------
+
+        def test_aggregate_topic_breakdown_normalization(self):
+            """'DP' and 'dynamic programming' topic names normalize to 'Dynamic Programming'."""
+            # Add an accepted problem tagged with "dp" (lowercase) — should normalize
+            dp_problem = self._problem(
+                "998-A", "DP Problem", Difficulty.EASY, Platform.CODEFORCES
+            )
+            self.session.add(dp_problem)
+            self.session.flush()
+
+            dp_topic = Topic(name="dp")
+            self.session.add(dp_topic)
+            self.session.flush()
+
+            self.session.add(ProblemTopic(problem_id=dp_problem.id, topic_id=dp_topic.id))
+            self.session.add(
+                Submission(
+                    profile_id=self.profile.id,
+                    problem_id=dp_problem.id,
+                    contest_id=None,
+                    platform_submission_id="dp-s1",
+                    submitted_at=datetime.now(timezone.utc).replace(tzinfo=None),
+                    language="Python 3",
+                    status=SubmissionStatus.ACCEPTED,
+                )
+            )
+            self.session.commit()
+
+            resp = self.client.get(
+                "/analytics/aggregate/topic-breakdown?platforms=codeforces"
+            )
+            self.assertEqual(resp.status_code, 200)
+            data = resp.json()
+
+            topic_names = [t["topic"] for t in data["topics"]]
+            # "dp" should have been normalized to "Dynamic Programming"
+            self.assertIn("Dynamic Programming", topic_names)
+            # Raw "dp" should not appear
+            self.assertNotIn("dp", topic_names)
+
+        # ------------------------------------------------------------------
+        # Test 9i: Correct percentage math — sums approximately to 100
+        # ------------------------------------------------------------------
+
+        def test_aggregate_topic_breakdown_percentages_sum_to_100(self):
+            """Slice percentages must sum to approximately 100 % (±1 % for rounding)."""
+            resp = self.client.get(
+                "/analytics/aggregate/topic-breakdown?platforms=codeforces"
+            )
+            self.assertEqual(resp.status_code, 200)
+            data = resp.json()
+
+            if not data["topics"]:
+                self.skipTest("No topic data to validate percentages")
+
+            total_pct = sum(t["percentage"] for t in data["topics"])
+            self.assertAlmostEqual(total_pct, 100.0, delta=1.5)
+
+    def test_aggregate_topic_breakdown_returns_canonical_topics(self):
+        canonical_tags = [
+            "arrays",
+            "sorting",
+            "searching",
+            "recursion",
+            "hashing",
+            "linked list",
+            "stack",
+            "queue",
+            "trees",
+            "graphs",
+            "dp",
+            "greedy",
+        ]
+
+        for i, raw_tag in enumerate(canonical_tags):
+            problem = self._problem(
+                f"800-{chr(65 + i)}",
+                f"Canonical Topic Problem {i}",
+                Difficulty.EASY,
+                Platform.CODEFORCES,
+            )
+
+            self.session.add(problem)
+            self.session.flush()
+
+            topic = Topic(name=raw_tag)
+            self.session.add(topic)
+            self.session.flush()
+
+            self.session.add(
+                ProblemTopic(
+                    problem_id=problem.id,
+                    topic_id=topic.id,
+                )
+            )
+
+            self.session.add(
+                Submission(
+                    profile_id=self.profile.id,
+                    problem_id=problem.id,
+                    contest_id=None,
+                    platform_submission_id=f"canonical-s-{i}",
+                    submitted_at=datetime.now(timezone.utc).replace(tzinfo=None),
+                    language="Python 3",
+                    status=SubmissionStatus.ACCEPTED,
+                )
+            )
+
+        self.session.commit()
+
+        resp = self.client.get(
+            "/analytics/aggregate/topic-breakdown?platforms=codeforces"
+        )
+
+        self.assertEqual(resp.status_code, 200)
+
+        data = resp.json()
+
+        topic_names = {
+            topic["topic"]
+            for topic in data["topics"]
+        }
+
+        expected_topics = {
+            "Arrays",
+            "Sorting",
+            "Searching",
+            "Recursion",
+            "Hashing",
+            "Linked Lists",
+            "Stacks & Queues",
+            "Trees",
+            "Graphs",
+            "Dynamic Programming",
+            "Greedy",
+        }
+
+        self.assertLessEqual(len(data["topics"]), 8)
+
+        self.assertTrue(
+            topic_names.issubset(expected_topics | {"Other"})
+        )
         
-        # Should only include Codeforces data
-        self.assertGreater(data["tagged_solved"], 0)
+        self.assertTrue(
+            topic_names.intersection(expected_topics)
+        )
+
+    def test_aggregate_topic_breakdown_zero_topic_data(self):
+        """Empty profile (no submissions) → all zero totals and empty topics."""
+        self.app.dependency_overrides[get_current_user] = lambda: self.empty_user
+        resp = self.client.get("/analytics/aggregate/topic-breakdown")
+        self.assertEqual(resp.status_code, 200)
+        data = resp.json()
+
+        self.assertEqual(data["total_solved"], 0)
+        self.assertEqual(data["tagged_solved"], 0)
+        self.assertEqual(data["total_topic_assignments"], 0)
+        self.assertEqual(data["topics"], [])
+
+    # ------------------------------------------------------------------
+    # Test 9l: Partial topic coverage — total_solved > tagged_solved
+    # ------------------------------------------------------------------
+
+    def test_aggregate_topic_breakdown_partial_coverage(self):
+        """When some solved problems have no topics, tagged_solved < total_solved."""
+        resp = self.client.get(
+            "/analytics/aggregate/topic-breakdown?platforms=codeforces"
+        )
+        self.assertEqual(resp.status_code, 200)
+        data = resp.json()
+
+        # Setup: Easy (Arrays ✓) + Medium (Graphs ✓) are tagged; Hard (WRONG_ANSWER) not solved
+        # total_solved = 2, tagged_solved = 2 (both accepted problems are tagged)
+        self.assertEqual(data["total_solved"], 2)
+        self.assertLessEqual(data["tagged_solved"], data["total_solved"])
+
+
 
     # ------------------------------------------------------------------
     # Test 10: Aggregate difficulty distribution

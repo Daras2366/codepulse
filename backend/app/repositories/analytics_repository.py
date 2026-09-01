@@ -22,6 +22,8 @@ from app.models.topic import Topic
 from app.models.problem_topic import ProblemTopic
 from app.models.submission import Submission
 from app.repositories.dashboard_repository import DashboardRepository
+from app.models.platform_topic_stat import PlatformTopicStat
+from app.models.platform_profile import PlatformProfile
 
 
 class AnalyticsRepository:
@@ -65,60 +67,132 @@ class AnalyticsRepository:
     # ------------------------------------------------------------------
 
     def get_aggregate_topic_breakdown(self, profile_ids: List[int], platforms: List[Platform]):
-        """Return topic breakdown for selected profiles and platforms.
-        
-        Counts distinct solved problems per topic. A problem with multiple topics
-        contributes to each topic separately, but only once per topic.
-        
-        Also returns total solved count and tagged solved count.
+        """Return raw (problem_id, topic_name) pairs for all solved tagged problems.
+
+        Returns per-problem rows rather than pre-grouped counts so the service
+        layer can:
+          1. Canonicalise each raw tag via the taxonomy.
+          2. Deduplicate canonical topics *per problem* before counting.
+
+        This prevents a single problem from being counted multiple times for the
+        same canonical category when it carries several raw tags that all map to
+        that category (e.g. "graphs", "dfs and similar", "shortest paths" → Graphs ×1).
+
+        Returns
+        -------
+        tuple[list[Row], int, int]
+            (topic_rows, total_solved, raw_tagged_solved)
+
+            * topic_rows        – list of rows with .problem_id and .topic_name
+            * total_solved      – distinct solved problems matching the filter
+            * raw_tagged_solved – distinct solved problems with ≥1 raw topic tag
         """
-        # Subquery: get distinct solved problems for the selected profiles/platforms
+        # Subquery: distinct solved problem IDs for the selected profiles/platforms
         solved_problems_subquery = (
             self._db.query(
-                Problem.id.label('problem_id'),
-                Problem.platform
+                Problem.id.label("problem_id"),
             )
             .join(Submission, Submission.problem_id == Problem.id)
             .filter(
                 Submission.profile_id.in_(profile_ids),
                 Submission.status == SubmissionStatus.ACCEPTED,
-                Problem.platform.in_(platforms)
+                Problem.platform.in_(platforms),
             )
             .distinct()
             .subquery()
         )
-        
-        # Count total solved problems
+
+        # Total distinct solved problems
         total_solved = (
-            self._db.query(func.count(distinct(solved_problems_subquery.c.problem_id)))
-            .scalar()
+            self._db.query(func.count(solved_problems_subquery.c.problem_id)).scalar()
         ) or 0
-        
-        # Count tagged solved problems (problems with at least one topic)
-        tagged_solved = (
-            self._db.query(func.count(distinct(solved_problems_subquery.c.problem_id)))
-            .join(ProblemTopic, ProblemTopic.problem_id == solved_problems_subquery.c.problem_id)
-            .scalar()
-        ) or 0
-        
-        # Main query: count solved problems by topic
-        topic_query = (
+
+        # Distinct solved problems that have ≥1 raw topic tag
+        raw_tagged_solved = (
             self._db.query(
-                Topic.name,
-                func.count(distinct(solved_problems_subquery.c.problem_id)).label('solved_count')
+                func.count(distinct(solved_problems_subquery.c.problem_id))
             )
-            .join(ProblemTopic, ProblemTopic.topic_id == Topic.id)
             .join(
-                solved_problems_subquery, 
-                solved_problems_subquery.c.problem_id == ProblemTopic.problem_id
+                ProblemTopic,
+                ProblemTopic.problem_id == solved_problems_subquery.c.problem_id,
             )
-            .group_by(Topic.name)
+            .scalar()
+        ) or 0
+
+        # Per-problem topic rows: one row per (solved_problem, raw_tag) pair.
+        # The service layer groups + canonicalises these.
+        topic_rows = (
+            self._db.query(
+                solved_problems_subquery.c.problem_id.label("problem_id"),
+                Topic.name.label("topic_name"),
+            )
+            .join(
+                ProblemTopic,
+                ProblemTopic.problem_id == solved_problems_subquery.c.problem_id,
+            )
+            .join(Topic, Topic.id == ProblemTopic.topic_id)
             .all()
         )
-        
-        return topic_query, total_solved, tagged_solved
+
+        return topic_rows, total_solved, raw_tagged_solved
+
+    def get_solved_count_by_platform(
+        self,
+        profile_ids: List[int],
+        platforms: List[Platform],
+    ) -> dict:
+        """Return {platform_name: distinct_solved_count} for each platform.
+
+        Used to build the platform_coverage list in the topic breakdown
+        response, so the frontend can accurately report which platforms
+        have topic data and which do not.
+        """
+        rows = (
+            self._db.query(
+                Problem.platform.label("platform"),
+                func.count(distinct(Problem.id)).label("solved_count"),
+            )
+            .join(Submission, Submission.problem_id == Problem.id)
+            .filter(
+                Submission.profile_id.in_(profile_ids),
+                Submission.status == SubmissionStatus.ACCEPTED,
+                Problem.platform.in_(platforms),
+            )
+            .group_by(Problem.platform)
+            .all()
+        )
+
+        return {row.platform: int(row.solved_count) for row in rows}
+    
+    def get_tagged_solved_count_by_platform(
+        self,
+        profile_ids: List[int],
+        platform: Platform,
+        tagged_problem_ids: set[int],
+    ) -> int:
+
+        if not tagged_problem_ids:
+            return 0
+
+        count = (
+            self._db.query(func.count(distinct(Problem.id)))
+            .join(
+                Submission,
+                Submission.problem_id == Problem.id,
+            )
+            .filter(
+                Submission.profile_id.in_(profile_ids),
+                Submission.status == SubmissionStatus.ACCEPTED,
+                Problem.platform == platform,
+                Problem.id.in_(tagged_problem_ids),
+            )
+            .scalar()
+        )
+
+        return int(count or 0)
 
     def get_aggregate_difficulty_distribution(self, profile_ids: List[int], platforms: List[Platform]):
+
         """Return difficulty distribution for selected profiles and platforms."""
         # Query: get distinct solved problems by difficulty for selected profiles
         difficulty_query = (
@@ -162,3 +236,23 @@ class AnalyticsRepository:
         )
         
         return activity_query
+
+    def get_leetcode_topic_stats(
+        self,
+        profile_ids: list[int],
+    ):
+        return (
+            self._db.query(
+                PlatformTopicStat.topic_name,
+                PlatformTopicStat.solved_count,
+            )
+            .join(
+                PlatformProfile,
+                PlatformProfile.id == PlatformTopicStat.profile_id,
+            )
+            .filter(
+                PlatformTopicStat.profile_id.in_(profile_ids),
+                PlatformProfile.platform == Platform.LEETCODE,
+            )
+            .all()
+        )

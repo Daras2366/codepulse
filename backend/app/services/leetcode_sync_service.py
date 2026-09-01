@@ -1,5 +1,3 @@
-"""LeetCode platform synchronization service."""
-
 import logging
 import re
 import unicodedata
@@ -30,6 +28,7 @@ from app.services.base_sync_service import (
     PlatformUsernameNotFoundError,
 )
 from app.repositories.topic_repository import TopicRepository
+from app.models.platform_topic_stat import PlatformTopicStat
 
 logger = logging.getLogger(__name__)
 
@@ -209,6 +208,64 @@ class LeetCodeSyncService(BaseSyncService):
         except Exception:
             self.db.rollback()
             raise
+        
+    def _sync_topic_stats(
+        self,
+        profile: PlatformProfile,
+        tag_problem_counts: dict,
+    ) -> None:
+        """Persist LeetCode's user-level solved counts by topic."""
+
+        levels = (
+            "advanced",
+            "intermediate",
+            "fundamental",
+        )
+
+        seen_slugs: set[str] = set()
+
+        for level in levels:
+            for tag in tag_problem_counts.get(level, []):
+                topic_name = tag.get("tagName")
+                topic_slug = tag.get("tagSlug")
+                solved_count = tag.get("problemsSolved", 0)
+
+                if not topic_name or not topic_slug:
+                    continue
+
+                seen_slugs.add(topic_slug)
+
+                existing = (
+                    self.db.query(PlatformTopicStat)
+                    .filter(
+                        PlatformTopicStat.profile_id == profile.id,
+                        PlatformTopicStat.topic_slug == topic_slug,
+                    )
+                    .first()
+                )
+
+                if existing:
+                    existing.topic_name = topic_name
+                    existing.solved_count = int(solved_count or 0)
+                else:
+                    self.db.add(
+                        PlatformTopicStat(
+                            profile_id=profile.id,
+                            topic_name=topic_name,
+                            topic_slug=topic_slug,
+                            solved_count=int(solved_count or 0),
+                        )
+                    )
+
+        # Remove stale tags if LeetCode no longer reports them.
+        (
+            self.db.query(PlatformTopicStat)
+            .filter(
+                PlatformTopicStat.profile_id == profile.id,
+                ~PlatformTopicStat.topic_slug.in_(seen_slugs),
+            )
+            .delete(synchronize_session=False)
+        )
 
     def _fetch_remote_profile(self, username: str) -> Any:
         """Fetch LeetCode profile data."""
@@ -319,6 +376,11 @@ class LeetCodeSyncService(BaseSyncService):
         profile.solved_medium = solved_counts["Medium"]
         profile.solved_hard = solved_counts["Hard"]
         
+        self._sync_topic_stats(
+            profile,
+            remote_profile.get("tagProblemCounts", {}),
+        )
+        
         # Update profile URL
         profile.profile_url = f"https://leetcode.com/{profile.username}"
         profile.is_connected = True
@@ -399,7 +461,9 @@ class LeetCodeSyncService(BaseSyncService):
         )
 
         if existing is not None:
-            # Return existing problem without backfill to avoid API request explosion
+            # Backfill topics for existing problems using public API
+            # This is safe because fetch_problem_details uses public unauthenticated endpoint
+            self._sync_problem_topics(existing, title_slug)
             return existing, False
 
         # Create new problem
@@ -444,16 +508,23 @@ class LeetCodeSyncService(BaseSyncService):
         problem: Problem,
         title_slug: str,
     ) -> None:
-        """Sync LeetCode problem topics to Topic and ProblemTopic tables."""
+        """Sync LeetCode problem topics to Topic and ProblemTopic tables.
+        
+        Uses the public LeetCode GraphQL API - no authentication required.
+        This method is idempotent and can be called for both new and existing problems.
+        """
         try:
             problem_details = self.client.fetch_problem_details(title_slug)
             if not problem_details:
+                logger.debug("No problem details returned for %s", title_slug)
                 return
             
             topic_tags = problem_details.get("topicTags", [])
             if not topic_tags:
+                logger.debug("No topic tags returned for %s", title_slug)
                 return
             
+            topics_added = 0
             for tag_data in topic_tags:
                 tag_name = tag_data.get("name")
                 if not tag_name:
@@ -465,6 +536,7 @@ class LeetCodeSyncService(BaseSyncService):
                     topic = Topic(name=tag_name)
                     try:
                         self._safe_add_and_flush(topic)
+                        logger.debug("Created new topic: %s", tag_name)
                     except IntegrityError:
                         # Topic might have been created by another process
                         topic = self.topics.get_by_name(tag_name)
@@ -478,9 +550,14 @@ class LeetCodeSyncService(BaseSyncService):
                 )
                 try:
                     self._safe_add_and_flush(problem_topic)
+                    topics_added += 1
                 except IntegrityError:
                     # Relationship already exists, which is fine
                     pass
+            
+            if topics_added > 0:
+                logger.info("Added %d topic(s) for problem %s", topics_added, title_slug)
+                
         except Exception as e:
             logger.warning("Failed to sync topics for %s: %s", title_slug, e)
 
@@ -751,3 +828,227 @@ class LeetCodeSyncService(BaseSyncService):
         slugified = re.sub(r"[^a-z0-9]+", "-", ascii_title.lower()).strip("-")
         
         return f"leetcode-{slugified or 'contest'}"[:255]
+    
+    
+    def fetch_all_solved_problems_with_topics(
+        self,
+        profile_id: int,
+        user_id: int,
+        max_problems: int | None = None,
+        batch_delay: float = 0.3,
+    ) -> dict[str, int]:
+        """
+        DEPRECATED: Enumerate ALL solved LeetCode problems and persist their topic tags.
+        
+        This method is deprecated. Use backfill_leetcode_topics() instead, which uses
+        the public API and does not require authentication.
+        
+        This is kept for backwards compatibility but will be removed in a future version.
+        """
+        logger.warning(
+            "fetch_all_solved_problems_with_topics is deprecated. "
+            "Use backfill_leetcode_topics() instead."
+        )
+        
+        # Map the old result format to the new one for backwards compatibility
+        new_result = self.backfill_leetcode_topics(profile_id, user_id, max_problems)
+        
+        return {
+            "solved_discovered": new_result["problems_processed"] + new_result["problems_skipped"],
+            "problems_created": 0,  # New method doesn't create problems, only backfills topics
+            "problems_found": new_result["problems_processed"] + new_result["problems_skipped"],
+            "topics_created": new_result["topics_created"],
+            "topic_links_created": new_result["topic_links_created"],
+            "already_tagged": new_result["problems_skipped"],
+            "no_topics": 0,  # Not tracked in new method
+            "failed": new_result["failed"],
+        }
+
+    def backfill_leetcode_topics(
+        self,
+        profile_id: int,
+        user_id: int,
+        max_problems: int | None = None,
+    ) -> dict[str, int]:
+        """
+        Backfill topic tags for locally stored LeetCode problems using public API.
+
+        This method finds all LeetCode problems that the user has solved
+        based on locally stored submissions (limited to recent syncs) and
+        fetches topic tags using the public LeetCode GraphQL API - no
+        authentication required.
+
+        **Important Limitations**
+
+        - This is a LOCAL-DATA backfill only. It only processes problems already
+          stored in CodePulse from recent syncs.
+        - It does NOT discover or backfill historical solved problems that are
+          not in the local database.
+        - For complete LeetCode topic analytics, the system uses profile-level
+          ``tagProblemCounts`` from the public profile API, not this backfill.
+
+        Algorithm:
+        1. Get the user's LeetCode profile
+        2. Find all LeetCode problems the user has solved (from local submissions)
+        3. For each problem without topics, fetch details using public API
+        4. Create missing Topic and ProblemTopic relationships
+        5. Return statistics about the backfill operation
+
+        This is safe to run multiple times (idempotent).
+
+        Args:
+            profile_id: CodePulse LeetCode PlatformProfile.id
+            user_id: Authenticated CodePulse user ID (ownership check)
+            max_problems: Optional hard cap on problems to process for testing
+
+        Returns:
+            dict with keys:
+            problems_processed, problems_skipped (already had topics),
+            topics_created, topic_links_created, failed
+        """
+        import time
+        
+        # Verify profile ownership
+        profile = self._get_platform_profile(profile_id, user_id)
+        
+        if profile.platform != Platform.LEETCODE:
+            raise LeetCodeSyncError(
+                "The selected profile is not a LeetCode profile."
+            )
+        
+        logger.info("Starting LeetCode topic backfill for profile %s", profile.username)
+        
+        # Find all LeetCode problems this user has solved
+        solved_problems = (
+            self.db.query(Problem)
+            .join(Submission, Problem.id == Submission.problem_id)
+            .filter(
+                Submission.profile_id == profile_id,
+                Submission.status == SubmissionStatus.ACCEPTED,
+                Problem.platform == Platform.LEETCODE,
+            )
+            .distinct()
+            .all()
+        )
+        
+        if max_problems:
+            solved_problems = solved_problems[:max_problems]
+        
+        total_problems = len(solved_problems)
+        logger.info("Found %d solved LeetCode problems to process", total_problems)
+        
+        if total_problems == 0:
+            return {
+                "problems_processed": 0,
+                "problems_skipped": 0,
+                "topics_created": 0,
+                "topic_links_created": 0,
+                "failed": 0,
+            }
+        
+        # Find problems that already have topics
+        problems_with_topics = set(
+            row.problem_id
+            for row in self.db.query(ProblemTopic.problem_id)
+            .filter(
+                ProblemTopic.problem_id.in_([p.id for p in solved_problems])
+            )
+            .distinct()
+            .all()
+        )
+        
+        result = {
+            "problems_processed": 0,
+            "problems_skipped": 0,
+            "topics_created": 0,
+            "topic_links_created": 0,
+            "failed": 0,
+        }
+        
+        # Process each problem
+        for idx, problem in enumerate(solved_problems, start=1):
+            # Log progress every 10 problems
+            if idx % 10 == 0 or idx == total_problems:
+                logger.info("Processing %d/%d problems", idx, total_problems)
+            
+            # Skip if already has topics
+            if problem.id in problems_with_topics:
+                result["problems_skipped"] += 1
+                continue
+            
+            try:
+                # Fetch problem details using public API
+                title_slug = problem.platform_problem_id
+                problem_details = self.client.fetch_problem_details(title_slug)
+                
+                if not problem_details:
+                    logger.debug("No details returned for problem %s", title_slug)
+                    result["failed"] += 1
+                    continue
+                
+                topic_tags = problem_details.get("topicTags", [])
+                if not topic_tags:
+                    logger.debug("No topic tags for problem %s", title_slug)
+                    result["problems_processed"] += 1
+                    continue
+                
+                # Process each topic tag
+                topics_added_for_problem = 0
+                for tag_data in topic_tags:
+                    tag_name = tag_data.get("name")
+                    if not tag_name:
+                        continue
+                    
+                    # Get or create topic
+                    topic = self.topics.get_by_name(tag_name)
+                    if topic is None:
+                        topic = Topic(name=tag_name)
+                        try:
+                            self._safe_add_and_flush(topic)
+                            result["topics_created"] += 1
+                        except IntegrityError:
+                            # Topic might have been created concurrently
+                            topic = self.topics.get_by_name(tag_name)
+                            if topic is None:
+                                continue
+                    
+                    # Create ProblemTopic relationship
+                    problem_topic = ProblemTopic(
+                        problem_id=problem.id,
+                        topic_id=topic.id,
+                    )
+                    try:
+                        self._safe_add_and_flush(problem_topic)
+                        result["topic_links_created"] += 1
+                        topics_added_for_problem += 1
+                    except IntegrityError:
+                        # Relationship already exists
+                        pass
+                
+                if topics_added_for_problem > 0:
+                    result["problems_processed"] += 1
+                    # Add to set so we don't process again if there are duplicates
+                    problems_with_topics.add(problem.id)
+                
+                # Small delay to avoid rate limiting
+                if idx % 10 == 0:
+                    time.sleep(0.1)
+                    
+            except Exception as exc:
+                logger.warning("Failed to backfill topics for problem %s: %s", 
+                             problem.platform_problem_id, exc)
+                result["failed"] += 1
+        
+        self.db.commit()
+        
+        logger.info(
+            "LeetCode topic backfill completed: processed=%d skipped=%d "
+            "topics_created=%d links_created=%d failed=%d",
+            result["problems_processed"],
+            result["problems_skipped"],
+            result["topics_created"],
+            result["topic_links_created"],
+            result["failed"],
+        )
+        
+        return result

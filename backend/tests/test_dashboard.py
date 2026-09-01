@@ -61,6 +61,7 @@ class DashboardApiTests(TestCase):
             current_rating=1500,
             max_rating=1600,
             rank="specialist",
+            problems_solved=2,  # Set to match test expectation
             last_synced_at=datetime(2026, 8, 11, tzinfo=timezone.utc),
         )
         self.other_profile = PlatformProfile(

@@ -12,8 +12,11 @@ from app.models.contest_participation import ContestParticipation
 from app.models.rating_history import RatingHistory
 from app.models.enums import Platform, Difficulty, SubmissionStatus
 from app.models.platform_profile import PlatformProfile
+from app.models.platform_topic_stat import PlatformTopicStat
 from app.models.problem import Problem
 from app.models.submission import Submission
+from app.models.topic import Topic
+from app.models.problem_topic import ProblemTopic
 from app.models.user import User
 from app.services.leetcode_sync_service import (
     LeetCodeSyncError,
@@ -44,7 +47,20 @@ class FakeLeetCodeClient:
         return []
     
     def fetch_problem_details(self, title_slug):
-        return None
+        # Return mock problem details with topic tags
+        mock_details = {
+            "two-sum": {
+                "title": "Two Sum",
+                "difficulty": "Easy",
+                "topicTags": [{"name": "Array"}, {"name": "Hash Table"}]
+            },
+            "add-two-numbers": {
+                "title": "Add Two Numbers", 
+                "difficulty": "Medium",
+                "topicTags": [{"name": "Linked List"}, {"name": "Math"}]
+            }
+        }
+        return mock_details.get(title_slug)
 
 
 class LeetCodeSyncServiceTests(TestCase):
@@ -178,7 +194,7 @@ class LeetCodeSyncServiceTests(TestCase):
         
         self.assertEqual(problems[1].platform_problem_id, "two-sum")
         self.assertEqual(problems[1].title, "Two Sum")
-        self.assertEqual(problems[1].difficulty, Difficulty.MEDIUM)
+        self.assertEqual(problems[1].difficulty, Difficulty.EASY)
 
     def test_duplicate_submissions_are_skipped(self):
         """Duplicate submissions should be skipped on re-sync (idempotency)."""
@@ -305,6 +321,368 @@ class LeetCodeSyncServiceTests(TestCase):
         self.assertEqual(result.submissions_created, 1)
         submission = self.session.query(Submission).one()
         self.assertEqual(submission.problem_id, existing_problem.id)
+
+    def test_problem_topics_are_synced_for_new_problems(self):
+        """New problems should have their topics synced from public API."""
+        profile_data = {
+            "profile": {},
+            "userContestRanking": None,
+            "submitStats": {"acSubmissionNum": [{"difficulty": "All", "count": 1}]},
+        }
+        submission_data = {
+            "timestamp": 1700000000,
+            "statusDisplay": "Accepted",
+            "lang": "Python3",
+            "titleSlug": "two-sum",
+            "title": "Two Sum",
+        }
+
+        service = LeetCodeSyncService(
+            self.session,
+            FakeLeetCodeClient(profile_data, [submission_data]),
+        )
+
+        result = service.sync_profile(self.profile.id, self.user.id)
+
+        # Verify problem was created
+        self.assertEqual(result.problems_created, 1)
+        problem = self.session.query(Problem).one()
+        self.assertEqual(problem.platform_problem_id, "two-sum")
+
+        # Verify topics were created
+        topics = self.session.query(Topic).all()
+        self.assertEqual(len(topics), 2)
+        topic_names = {t.name for t in topics}
+        self.assertIn("Array", topic_names)
+        self.assertIn("Hash Table", topic_names)
+
+        # Verify problem-topic relationships were created
+        problem_topics = self.session.query(ProblemTopic).all()
+        self.assertEqual(len(problem_topics), 2)
+
+    def test_problem_topics_are_backfilled_for_existing_problems(self):
+        """Existing problems should have topics backfilled when encountered again."""
+        # Create an existing problem without topics
+        existing_problem = Problem(
+            platform=Platform.LEETCODE,
+            platform_problem_id="two-sum",
+            title="Two Sum",
+            slug="leetcode-two-sum-two-sum",
+            problem_url="https://leetcode.com/problems/two-sum/",
+            difficulty=Difficulty.EASY,
+        )
+        self.session.add(existing_problem)
+        self.session.commit()
+
+        profile_data = {
+            "profile": {},
+            "userContestRanking": None,
+            "submitStats": {"acSubmissionNum": [{"difficulty": "All", "count": 1}]},
+        }
+        submission_data = {
+            "timestamp": 1700000000,
+            "statusDisplay": "Accepted",
+            "lang": "Python3",
+            "titleSlug": "two-sum",
+            "title": "Two Sum",
+        }
+
+        service = LeetCodeSyncService(
+            self.session,
+            FakeLeetCodeClient(profile_data, [submission_data]),
+        )
+
+        result = service.sync_profile(self.profile.id, self.user.id)
+
+        # Verify problem was not duplicated
+        self.assertEqual(result.problems_created, 0)
+        self.assertEqual(self.session.query(Problem).count(), 1)
+
+        # Verify topics were created via backfill
+        topics = self.session.query(Topic).all()
+        self.assertEqual(len(topics), 2)
+        topic_names = {t.name for t in topics}
+        self.assertIn("Array", topic_names)
+        self.assertIn("Hash Table", topic_names)
+
+        # Verify problem-topic relationships were created
+        problem_topics = self.session.query(ProblemTopic).all()
+        self.assertEqual(len(problem_topics), 2)
+
+    def test_backfill_leetcode_topics_public_api(self):
+        """Backfill method should use public API to fetch topics for existing problems."""
+        # Create existing problems without topics
+        problem1 = Problem(
+            platform=Platform.LEETCODE,
+            platform_problem_id="two-sum",
+            title="Two Sum",
+            slug="leetcode-two-sum-two-sum",
+            problem_url="https://leetcode.com/problems/two-sum/",
+            difficulty=Difficulty.EASY,
+        )
+        problem2 = Problem(
+            platform=Platform.LEETCODE,
+            platform_problem_id="add-two-numbers",
+            title="Add Two Numbers",
+            slug="leetcode-add-two-numbers-add-two-numbers",
+            problem_url="https://leetcode.com/problems/add-two-numbers/",
+            difficulty=Difficulty.MEDIUM,
+        )
+        self.session.add_all([problem1, problem2])
+        self.session.flush()
+
+        # Create submissions for these problems
+        submission1 = Submission(
+            profile_id=self.profile.id,
+            problem_id=problem1.id,
+            platform_submission_id="s1",
+            submitted_at=datetime.now(timezone.utc),
+            status=SubmissionStatus.ACCEPTED,
+            language="Python3",
+        )
+        submission2 = Submission(
+            profile_id=self.profile.id,
+            problem_id=problem2.id,
+            platform_submission_id="s2",
+            submitted_at=datetime.now(timezone.utc),
+            status=SubmissionStatus.ACCEPTED,
+            language="Python3",
+        )
+        self.session.add_all([submission1, submission2])
+        self.session.commit()
+
+        # Mock client that returns topic data
+        client = FakeLeetCodeClient(None, [])
+        service = LeetCodeSyncService(self.session, client)
+
+        # Run backfill
+        result = service.backfill_leetcode_topics(
+            profile_id=self.profile.id,
+            user_id=self.user.id,
+        )
+
+        # Verify results - should process 2 problems and create topics
+        self.assertEqual(result["problems_processed"], 2)
+        self.assertEqual(result["problems_skipped"], 0)
+        self.assertGreater(result["topics_created"], 0)
+        self.assertGreater(result["topic_links_created"], 0)
+        self.assertEqual(result["failed"], 0)
+
+    def test_backfill_leetcode_topics_idempotent(self):
+        """Backfill should be idempotent - running twice should not create duplicates."""
+        # Create existing problem with submission
+        problem = Problem(
+            platform=Platform.LEETCODE,
+            platform_problem_id="two-sum",
+            title="Two Sum",
+            slug="leetcode-two-sum-two-sum",
+            problem_url="https://leetcode.com/problems/two-sum/",
+            difficulty=Difficulty.EASY,
+        )
+        self.session.add(problem)
+        self.session.flush()
+
+        submission = Submission(
+            profile_id=self.profile.id,
+            problem_id=problem.id,
+            platform_submission_id="s1",
+            submitted_at=datetime.now(timezone.utc),
+            status=SubmissionStatus.ACCEPTED,
+            language="Python3",
+        )
+        self.session.add(submission)
+        self.session.commit()
+
+        client = FakeLeetCodeClient(None, [])
+        service = LeetCodeSyncService(self.session, client)
+
+        # First backfill
+        result1 = service.backfill_leetcode_topics(
+            profile_id=self.profile.id,
+            user_id=self.user.id,
+        )
+        self.assertEqual(result1["problems_processed"], 1)
+        self.assertEqual(result1["topics_created"], 2)
+        self.assertEqual(result1["topic_links_created"], 2)
+
+        # Second backfill (should skip already-tagged problem)
+        result2 = service.backfill_leetcode_topics(
+            profile_id=self.profile.id,
+            user_id=self.user.id,
+        )
+        self.assertEqual(result2["problems_processed"], 0)
+        self.assertEqual(result2["problems_skipped"], 1)
+        self.assertEqual(result2["topics_created"], 0)
+        self.assertEqual(result2["topic_links_created"], 0)
+
+        # Verify no duplicates were created
+        self.assertEqual(self.session.query(Topic).count(), 2)
+        self.assertEqual(self.session.query(ProblemTopic).count(), 2)
+
+    def test_sync_creates_platform_topic_stats(self):
+        """Sync should create PlatformTopicStat rows from tagProblemCounts."""
+        profile_data = {
+            "profile": {},
+            "userContestRanking": None,
+            "submitStats": {"acSubmissionNum": [{"difficulty": "All", "count": 1}]},
+            "tagProblemCounts": {
+                "advanced": [
+                    {"tagName": "Dynamic Programming", "tagSlug": "dynamic-programming", "problemsSolved": 5}
+                ],
+                "intermediate": [
+                    {"tagName": "Array", "tagSlug": "array", "problemsSolved": 10}
+                ],
+                "fundamental": [
+                    {"tagName": "String", "tagSlug": "string", "problemsSolved": 3}
+                ]
+            }
+        }
+        submission_data = {
+            "timestamp": 1700000000,
+            "statusDisplay": "Accepted",
+            "lang": "Python3",
+            "titleSlug": "two-sum",
+            "title": "Two Sum",
+        }
+
+        service = LeetCodeSyncService(
+            self.session,
+            FakeLeetCodeClient(profile_data, [submission_data]),
+        )
+
+        result = service.sync_profile(self.profile.id, self.user.id)
+
+        # Verify PlatformTopicStat rows were created
+        topic_stats = self.session.query(PlatformTopicStat).all()
+        self.assertEqual(len(topic_stats), 3)
+
+        # Verify specific stats
+        stat_by_slug = {stat.topic_slug: stat for stat in topic_stats}
+        self.assertEqual(stat_by_slug["dynamic-programming"].solved_count, 5)
+        self.assertEqual(stat_by_slug["array"].solved_count, 10)
+        self.assertEqual(stat_by_slug["string"].solved_count, 3)
+
+    def test_sync_updates_existing_platform_topic_stats(self):
+        """Sync should update existing PlatformTopicStat rows."""
+        # Create existing topic stat
+        existing_stat = PlatformTopicStat(
+            profile_id=self.profile.id,
+            topic_name="Array",
+            topic_slug="array",
+            solved_count=5,
+        )
+        self.session.add(existing_stat)
+        self.session.commit()
+
+        profile_data = {
+            "profile": {},
+            "userContestRanking": None,
+            "submitStats": {"acSubmissionNum": [{"difficulty": "All", "count": 1}]},
+            "tagProblemCounts": {
+                "advanced": [],
+                "intermediate": [
+                    {"tagName": "Array", "tagSlug": "array", "problemsSolved": 15}
+                ],
+                "fundamental": []
+            }
+        }
+        submission_data = {
+            "timestamp": 1700000000,
+            "statusDisplay": "Accepted",
+            "lang": "Python3",
+            "titleSlug": "two-sum",
+            "title": "Two Sum",
+        }
+
+        service = LeetCodeSyncService(
+            self.session,
+            FakeLeetCodeClient(profile_data, [submission_data]),
+        )
+
+        result = service.sync_profile(self.profile.id, self.user.id)
+
+        # Verify stat was updated, not duplicated
+        topic_stats = self.session.query(PlatformTopicStat).all()
+        self.assertEqual(len(topic_stats), 1)
+        self.assertEqual(topic_stats[0].solved_count, 15)  # Updated from 5 to 15
+
+    def test_sync_removes_stale_platform_topic_stats(self):
+        """Sync should remove topic stats that are no longer in the API response."""
+        # Create existing topic stats
+        stat1 = PlatformTopicStat(
+            profile_id=self.profile.id,
+            topic_name="Array",
+            topic_slug="array",
+            solved_count=10,
+        )
+        stat2 = PlatformTopicStat(
+            profile_id=self.profile.id,
+            topic_name="Old Topic",
+            topic_slug="old-topic",
+            solved_count=5,
+        )
+        self.session.add_all([stat1, stat2])
+        self.session.commit()
+
+        profile_data = {
+            "profile": {},
+            "userContestRanking": None,
+            "submitStats": {"acSubmissionNum": [{"difficulty": "All", "count": 1}]},
+            "tagProblemCounts": {
+                "advanced": [],
+                "intermediate": [
+                    {"tagName": "Array", "tagSlug": "array", "problemsSolved": 10}
+                ],
+                "fundamental": []
+            }
+        }
+        submission_data = {
+            "timestamp": 1700000000,
+            "statusDisplay": "Accepted",
+            "lang": "Python3",
+            "titleSlug": "two-sum",
+            "title": "Two Sum",
+        }
+
+        service = LeetCodeSyncService(
+            self.session,
+            FakeLeetCodeClient(profile_data, [submission_data]),
+        )
+
+        result = service.sync_profile(self.profile.id, self.user.id)
+
+        # Verify stale stat was removed
+        topic_stats = self.session.query(PlatformTopicStat).all()
+        self.assertEqual(len(topic_stats), 1)
+        self.assertEqual(topic_stats[0].topic_slug, "array")
+
+    def test_sync_handles_missing_tag_problem_counts(self):
+        """Sync should handle missing or null tagProblemCounts gracefully."""
+        profile_data = {
+            "profile": {},
+            "userContestRanking": None,
+            "submitStats": {"acSubmissionNum": [{"difficulty": "All", "count": 1}]},
+            # No tagProblemCounts field
+        }
+        submission_data = {
+            "timestamp": 1700000000,
+            "statusDisplay": "Accepted",
+            "lang": "Python3",
+            "titleSlug": "two-sum",
+            "title": "Two Sum",
+        }
+
+        service = LeetCodeSyncService(
+            self.session,
+            FakeLeetCodeClient(profile_data, [submission_data]),
+        )
+
+        # Should not raise an error
+        result = service.sync_profile(self.profile.id, self.user.id)
+
+        # Verify no topic stats were created
+        topic_stats = self.session.query(PlatformTopicStat).all()
+        self.assertEqual(len(topic_stats), 0)
 
     def test_only_accepted_submissions_count_as_solved(self):
         """Only accepted submissions should count toward problems_solved."""

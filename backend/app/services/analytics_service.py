@@ -17,9 +17,8 @@ No raw SQLAlchemy queries inside this service.
 
 from datetime import datetime
 from sqlalchemy.orm import Session
-from sqlalchemy import func, distinct, case
 
-from app.models.enums import Difficulty, SubmissionStatus
+from app.models.enums import Difficulty, SubmissionStatus, Platform
 
 from app.models.platform_profile import PlatformProfile
 from app.repositories.analytics_repository import AnalyticsRepository
@@ -44,7 +43,10 @@ from app.schemas.analytics import (
     AnalyticsRatingProgressionResponse,
     AnalyticsSubmissionActivityResponse,
     AnalyticsSummaryResponse,
+    PlatformSolvedCoverage,
 )
+
+from app.models.enums import Platform
 
 
 # ---------------------------------------------------------------------------
@@ -71,81 +73,328 @@ class AnalyticsService:
         self._repo = AnalyticsRepository(db)
 
     # ------------------------------------------------------------------
-    # Topic normalization
+    # Topic breakdown (canonical DSA taxonomy)
     # ------------------------------------------------------------------
 
-    @staticmethod
-    def _normalize_topic_name(topic_name: str) -> str:
-        """Normalize topic names across platforms for consistent display.
-        
-        Handles variations like:
-        - "dp" vs "dynamic programming" vs "Dynamic Programming"
-        - "graphs" vs "graph" vs "Graph"
-        - "greedy" vs "greedy algorithms"
+    def get_aggregate_topic_breakdown(
+        self,
+        user_id: int,
+        platforms: list[str] | None = None,
+    ) -> AggregateTopicBreakdownResponse:
+        """Return canonical DSA topic breakdown for selected platforms.
+
+        Raw platform tags are converted into CodePulse's canonical taxonomy.
+        Each problem is counted at most once per canonical topic.
+
+        For LeetCode: uses PlatformProfile.problems_solved and PlatformTopicStat.
+        For Codeforces: uses local ProblemTopic data from submissions.
         """
-        if not topic_name:
-            return topic_name
-        
-        normalized = topic_name.lower().strip()
-        
-        # Platform-specific normalizations
-        topic_mappings = {
-            # Dynamic programming variations
-            "dp": "Dynamic Programming",
-            "dynamic programming": "Dynamic Programming",
-            "dynamic-programming": "Dynamic Programming",
-            
-            # Graph variations
-            "graph": "Graphs",
-            "graphs": "Graphs",
-            
-            # Tree variations
-            "tree": "Trees",
-            "trees": "Trees",
-            
-            # String variations
-            "string": "Strings",
-            "strings": "Strings",
-            
-            # Math variations
-            "math": "Math",
-            "mathematics": "Math",
-            
-            # Greedy variations
-            "greedy": "Greedy",
-            "greedy algorithms": "Greedy",
-            
-            # Array variations
-            "array": "Arrays",
-            "arrays": "Arrays",
-            
-            # Other common variations
-            "binary search": "Binary Search",
-            "binarysearch": "Binary Search",
-            "sorting": "Sorting",
-            "data structures": "Data Structures",
-            "data structure": "Data Structures",
-            "implementation": "Implementation",
-            "constructive algorithms": "Constructive Algorithms",
-            "brute force": "Brute Force",
-            "dfs": "Depth First Search",
-            "depth first search": "Depth First Search",
-            "bfs": "Breadth First Search",
-            "breadth first search": "Breadth First Search",
-            "dp": "Dynamic Programming",
-            "number theory": "Number Theory",
-            "combinatorics": "Combinatorics",
-            "geometry": "Geometry",
-            "probabilities": "Probability",
-            "probability": "Probability",
-        }
-        
-        # Apply mapping if found
-        if normalized in topic_mappings:
-            return topic_mappings[normalized]
-        
-        # Title case for proper display
-        return topic_name.title()
+
+        from app.models.enums import Platform
+        from app.services.topic_taxonomy import canonicalize_topic
+
+        # --------------------------------------------------------------
+        # 1. Resolve user's profiles
+        # --------------------------------------------------------------
+
+        profiles = self._profiles.get_by_user_id(user_id)
+
+        if platforms:
+            valid_platforms: list[Platform] = []
+
+            for platform in platforms:
+                try:
+                    valid_platforms.append(Platform(platform))
+                except ValueError:
+                    continue
+
+            profiles = [
+                profile
+                for profile in profiles
+                if profile.platform in valid_platforms
+            ]
+
+        if not profiles:
+            return AggregateTopicBreakdownResponse(
+                total_solved=0,
+                tagged_solved=0,
+                total_topic_assignments=0,
+                topics=[],
+                platform_coverage=[],
+            )
+
+        # --------------------------------------------------------------
+        # 2. Separate LeetCode and other platforms
+        # --------------------------------------------------------------
+
+        leetcode_profiles = [
+            profile
+            for profile in profiles
+            if profile.platform == Platform.LEETCODE
+        ]
+
+        other_profiles = [
+            profile
+            for profile in profiles
+            if profile.platform != Platform.LEETCODE
+        ]
+
+        # --------------------------------------------------------------
+        # 3. Get problem-level topic data for non-LeetCode platforms
+        # --------------------------------------------------------------
+
+        topic_counts: dict[str, int] = {}
+        problem_topics: dict[int, set[str]] = {}
+
+        if other_profiles:
+            other_profile_ids = [p.id for p in other_profiles]
+            other_platform_enums = [p.platform for p in other_profiles]
+
+            (
+                topic_rows,
+                _,
+                raw_tagged_solved,
+            ) = self._repo.get_aggregate_topic_breakdown(
+                other_profile_ids,
+                other_platform_enums,
+            )
+
+            for row in topic_rows:
+                canonical_topic = canonicalize_topic(row.topic_name)
+
+                if canonical_topic is None:
+                    continue
+
+                problem_id = int(row.problem_id)
+
+                if problem_id not in problem_topics:
+                    problem_topics[problem_id] = set()
+
+                problem_topics[problem_id].add(canonical_topic)
+
+            for canonical_topics in problem_topics.values():
+                for topic in canonical_topics:
+                    topic_counts[topic] = (
+                        topic_counts.get(topic, 0) + 1
+                    )
+
+        # --------------------------------------------------------------
+        # 4. Add LeetCode profile-level topic statistics
+        # --------------------------------------------------------------
+
+        leetcode_profile_ids = [p.id for p in leetcode_profiles]
+        leetcode_profiles_with_topic_stats = set()
+
+        if leetcode_profile_ids:
+            leetcode_rows = self._repo.get_leetcode_topic_stats(
+                leetcode_profile_ids
+            )
+
+            for row in leetcode_rows:
+                canonical_topic = canonicalize_topic(row.topic_name)
+
+                if canonical_topic is None:
+                    continue
+
+                topic_counts[canonical_topic] = (
+                    topic_counts.get(canonical_topic, 0)
+                    + int(row.solved_count)
+                )
+
+            if leetcode_rows:
+                leetcode_profiles_with_topic_stats.update(leetcode_profile_ids)
+
+        # --------------------------------------------------------------
+        # 5. Calculate total_solved from profile data
+        # --------------------------------------------------------------
+
+        # For LeetCode, use profile.problems_solved directly
+        # For other platforms, use repository query
+        total_solved = 0
+
+        if leetcode_profiles:
+            total_solved += sum(p.problems_solved or 0 for p in leetcode_profiles)
+
+        if other_profiles:
+            other_profile_ids = [p.id for p in other_profiles]
+            other_platform_enums = [p.platform for p in other_profiles]
+            _, repo_total_solved, _ = self._repo.get_aggregate_topic_breakdown(
+                other_profile_ids,
+                other_platform_enums,
+            )
+            total_solved += int(repo_total_solved or 0)
+
+        # --------------------------------------------------------------
+        # 6. Calculate tagged_solved
+        # --------------------------------------------------------------
+
+        # For LeetCode: if topic stats exist, tagged_solved = total_solved
+        # (topic data is available for the complete solved population)
+        # For other platforms: use local problem-topic data
+        tagged_solved = 0
+
+        if leetcode_profiles:
+            for profile in leetcode_profiles:
+                if profile.id in leetcode_profiles_with_topic_stats:
+                    tagged_solved += int(profile.problems_solved or 0)
+
+        if other_profiles:
+            tagged_solved += raw_tagged_solved
+
+        # --------------------------------------------------------------
+        # 7. Build final response
+        # --------------------------------------------------------------
+
+        if not topic_counts:
+            return AggregateTopicBreakdownResponse(
+                total_solved=int(total_solved),
+                tagged_solved=tagged_solved,
+                total_topic_assignments=0,
+                topics=[],
+                platform_coverage=self._build_platform_coverage(
+                    profiles,
+                    problem_topics,
+                    leetcode_profiles_with_topic_stats,
+                ),
+            )
+
+        # --------------------------------------------------------------
+        # 8. Aggregate canonical topics
+        # --------------------------------------------------------------
+
+        total_topic_assignments = sum(topic_counts.values())
+
+        # --------------------------------------------------------------
+        # 9. Sort topics by frequency
+        # --------------------------------------------------------------
+
+        sorted_topics = sorted(
+            topic_counts.items(),
+            key=lambda item: (-item[1], item[0]),
+        )
+
+        # --------------------------------------------------------------
+        # 10. Keep only the top 7 topics
+        # --------------------------------------------------------------
+
+        TOP_TOPIC_LIMIT = 7
+
+        top_topics = sorted_topics[:TOP_TOPIC_LIMIT]
+        remaining_topics = sorted_topics[TOP_TOPIC_LIMIT:]
+
+        topics: list[AggregateTopicPoint] = []
+
+        for topic_name, count in top_topics:
+            percentage = (
+                round((count / total_topic_assignments) * 100, 1)
+                if total_topic_assignments > 0
+                else 0.0
+            )
+
+            topics.append(
+                AggregateTopicPoint(
+                    topic=topic_name,
+                    solved_count=count,
+                    percentage=percentage,
+                )
+            )
+
+        # --------------------------------------------------------------
+        # 11. Combine remaining topics into "Other"
+        # --------------------------------------------------------------
+
+        if remaining_topics:
+            other_count = sum(
+                count
+                for _, count in remaining_topics
+            )
+
+            other_percentage = (
+                round((other_count / total_topic_assignments) * 100, 1)
+                if total_topic_assignments > 0
+                else 0.0
+            )
+
+            topics.append(
+                AggregateTopicPoint(
+                    topic="Other",
+                    solved_count=other_count,
+                    percentage=other_percentage,
+                )
+            )
+
+        return AggregateTopicBreakdownResponse(
+            total_solved=int(total_solved),
+            tagged_solved=tagged_solved,
+            total_topic_assignments=total_topic_assignments,
+            topics=topics,
+            platform_coverage=self._build_platform_coverage(
+                profiles,
+                problem_topics,
+                leetcode_profiles_with_topic_stats,
+            ),
+        )
+
+    def _build_platform_coverage(
+        self,
+        profiles: list[PlatformProfile],
+        problem_topics: dict[int, set[str]],
+        leetcode_profiles_with_topic_stats: set[int],
+    ) -> list[PlatformSolvedCoverage]:
+        """Return per-platform solved and canonical-topic coverage.
+
+        For LeetCode: uses PlatformProfile.problems_solved directly.
+        For other platforms: uses repository queries based on local problem-topic data.
+        """
+
+        tagged_problem_ids = set(problem_topics.keys())
+
+        # Group profiles by platform
+        profiles_by_platform: dict[Platform, list[PlatformProfile]] = {}
+        for profile in profiles:
+            if profile.platform not in profiles_by_platform:
+                profiles_by_platform[profile.platform] = []
+            profiles_by_platform[profile.platform].append(profile)
+
+        coverage: list[PlatformSolvedCoverage] = []
+
+        for platform_enum, platform_profiles in profiles_by_platform.items():
+            if platform_enum == Platform.LEETCODE:
+                # LeetCode: sum profile.problems_solved across all LeetCode profiles
+                total_solved = sum(p.problems_solved or 0 for p in platform_profiles)
+
+                # If any profile has topic stats, tagged_solved = total_solved
+                has_topic_stats = any(
+                    p.id in leetcode_profiles_with_topic_stats
+                    for p in platform_profiles
+                )
+                tagged_solved = total_solved if has_topic_stats else 0
+            else:
+                # Other platforms: use repository queries
+                platform_profile_ids = [p.id for p in platform_profiles]
+                platform_enums = [platform_enum]
+
+                solved_by_platform = self._repo.get_solved_count_by_platform(
+                    platform_profile_ids,
+                    platform_enums,
+                )
+
+                total_solved = int(solved_by_platform.get(platform_enum, 0))
+                tagged_solved = self._repo.get_tagged_solved_count_by_platform(
+                    platform_profile_ids,
+                    platform_enum,
+                    tagged_problem_ids,
+                )
+
+            coverage.append(
+                PlatformSolvedCoverage(
+                    platform=platform_enum.value,
+                    total_solved=total_solved,
+                    tagged_solved=tagged_solved,
+                )
+            )
+
+        return coverage
 
     # ------------------------------------------------------------------
     # Public API
@@ -321,45 +570,6 @@ class AnalyticsService:
         # and ensure the overall response has proper timestamps
         return AggregateRatingProgressionResponse(series=series)
 
-    def get_aggregate_topic_breakdown(
-        self, 
-        user_id: int, 
-        platforms: list[str] | None = None
-    ) -> AggregateTopicBreakdownResponse:
-        """Return topic breakdown for selected platforms."""
-        from app.models.enums import Platform
-        
-        # Get user's profiles filtered by selected platforms
-        profiles = self._profiles.get_by_user_id(user_id)
-        if platforms:
-            platforms_enums = [Platform(p) for p in platforms]
-            profiles = [p for p in profiles if p.platform in platforms_enums]
-        
-        profile_ids = [p.id for p in profiles]
-        platforms_enums = [p.platform for p in profiles]
-        
-        if not profile_ids:
-            return AggregateTopicBreakdownResponse(total_solved=0, tagged_solved=0, topics=[])
-        
-        # Call repository to get topic data
-        topic_rows, total_solved, tagged_solved = self._repo.get_aggregate_topic_breakdown(profile_ids, platforms_enums)
-        
-        # Apply topic normalization and group by normalized names
-        topic_groups: dict[str, int] = {}
-        for row in topic_rows:
-            normalized_name = self._normalize_topic_name(row.name)
-            topic_groups[normalized_name] = topic_groups.get(normalized_name, 0) + row.solved_count
-        
-        topics = [
-            AggregateTopicPoint(
-                topic=topic_name,
-                solved_count=count,
-                percentage=round((count / tagged_solved) * 100, 1) if tagged_solved > 0 else 0.0
-            )
-            for topic_name, count in sorted(topic_groups.items(), key=lambda x: x[1], reverse=True)
-        ]
-        
-        return AggregateTopicBreakdownResponse(total_solved=total_solved, tagged_solved=tagged_solved, topics=topics)
 
     def get_aggregate_difficulty_distribution(
         self, 

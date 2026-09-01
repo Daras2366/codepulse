@@ -6,6 +6,7 @@ from .platform_profile import PlatformProfile
 from .problem import Problem
 from .topic import Topic
 from .problem_topic import ProblemTopic
+from .platform_topic_stat import PlatformTopicStat
 
 from .submission import Submission
 

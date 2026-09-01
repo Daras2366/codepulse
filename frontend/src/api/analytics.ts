@@ -100,10 +100,26 @@ export interface AggregateTopicPoint {
   percentage: number;
 }
 
+export interface PlatformSolvedCoverage {
+  /** Lowercase platform name, e.g. "codeforces" or "leetcode". */
+  platform: string;
+  total_solved: number;
+  /** Problems with ≥1 canonical DSA topic (may be 0 if platform has no topic data). */
+  tagged_solved: number;
+}
+
 export interface AggregateTopicBreakdown {
   total_solved: number;
   tagged_solved: number;
+  /** Sum of all topic-assignment counts. Use as donut denominator. */
+  total_topic_assignments: number;
   topics: AggregateTopicPoint[];
+  /**
+   * Per-platform coverage.  Present when the backend has enough context to
+   * break down coverage by platform.  The frontend uses this to clearly
+   * communicate which platforms currently have topic data and which do not.
+   */
+  platform_coverage?: PlatformSolvedCoverage[];
 }
 
 export interface AggregateDifficultyPoint {

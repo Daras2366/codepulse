@@ -154,11 +154,53 @@ class AggregateTopicPoint(BaseModel):
     percentage: float
 
 
-class AggregateTopicBreakdownResponse(BaseModel):
-    """Topic breakdown for selected platforms."""
+class PlatformSolvedCoverage(BaseModel):
+    """Per-platform solved count and topic coverage.
+
+    Used by the frontend to communicate which platforms have topic data
+    and which do not.
+    """
+    platform: str
     total_solved: int
     tagged_solved: int
+
+
+class AggregateTopicBreakdownResponse(BaseModel):
+    """Topic breakdown for selected platforms.
+
+    Fields:
+        total_solved:
+            Total distinct solved problems across the selected platforms.
+
+        tagged_solved:
+            Distinct solved problems that have at least one meaningful
+            canonical DSA topic.
+
+        total_topic_assignments:
+            Total number of canonical topic assignments.
+
+            A single problem can belong to multiple topics. For example,
+            a problem mapped to Arrays, Binary Search, and Sorting contributes
+            three topic assignments.
+
+            This is the denominator used for donut percentages.
+
+        topics:
+            All canonical DSA topics with available data, sorted by
+            assignment count in descending order.
+
+        platform_coverage:
+            Per-platform breakdown of total solved count and how many of
+            those problems have canonical topic data. Used by the frontend
+            to accurately communicate coverage limitations (e.g. LeetCode
+            problems currently have no topic metadata).
+    """
+
+    total_solved: int
+    tagged_solved: int
+    total_topic_assignments: int
     topics: list[AggregateTopicPoint]
+    platform_coverage: list[PlatformSolvedCoverage] = []
 
 
 # ---------------------------------------------------------------------------
