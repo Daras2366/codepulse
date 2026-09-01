@@ -1,7 +1,9 @@
+import { useState } from "react";
 import { Pencil, Trash2 } from "lucide-react";
 
 import type { GoalProgress } from "@/api/goals";
 import { ActionButton, AnimatedBar, AnimatedCounter } from "@/components/ui-kit/motion";
+import { DeleteConfirmDialog } from "@/components/goals/DeleteConfirmDialog";
 import { cn } from "@/lib/utils";
 
 export function ProgressBar({ value, color }: { value: number; color: string }) {
@@ -19,6 +21,8 @@ export function GoalCard({
   onDelete?: (id: number) => void;
   isDeleting?: boolean;
 }) {
+  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
+
   const pct = Math.min(100, Math.max(0, Math.round(progress.progress_percentage)));
   const isAchieved = progress.is_completed || pct >= 100;
   const tint = isAchieved ? "bg-green-soft" : "bg-card";
@@ -26,9 +30,14 @@ export function GoalCard({
 
   const handleDelete = () => {
     if (!onDelete) return;
-    if (window.confirm(`Delete goal "${progress.title}"? This cannot be undone.`)) {
+    setShowDeleteConfirm(true);
+  };
+
+  const confirmDelete = () => {
+    if (onDelete) {
       onDelete(progress.id);
     }
+    setShowDeleteConfirm(false);
   };
 
   return (
@@ -60,6 +69,7 @@ export function GoalCard({
         <div className="mt-3 flex items-center justify-between">
           <p className="text-label text-subtle">
             {progress.current_value.toLocaleString()} of {progress.target_value.toLocaleString()}
+            {progress.goal_type === "consistency" && " active days"}
             {progress.remaining > 0 && (
               <span className="ml-1 text-subtle/70">· {progress.remaining} remaining</span>
             )}
@@ -95,6 +105,15 @@ export function GoalCard({
           </div>
         </div>
       </div>
+
+      {/* Delete confirmation dialog */}
+      <DeleteConfirmDialog
+        isOpen={showDeleteConfirm}
+        goalTitle={progress.title}
+        onConfirm={confirmDelete}
+        onCancel={() => setShowDeleteConfirm(false)}
+        isDeleting={isDeleting}
+      />
     </article>
   );
 }

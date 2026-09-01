@@ -1,9 +1,11 @@
 import { useEffect, useState, useRef } from "react";
+import { createPortal } from "react-dom";
 import { X } from "lucide-react";
 
 import { getDashboardErrorMessage } from "@/api/client";
 import type { GoalCreate, GoalProgress, GoalType, GoalUpdate, Platform } from "@/api/goals";
 import { ActionButton } from "@/components/ui-kit/motion";
+import { TopicSelector } from "@/components/goals/TopicSelector";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -139,10 +141,11 @@ export function GoalModal(props: GoalModalProps) {
 
       if (isEditing) {
         // For edit, don't send goal_type since it's not editable
+        // eslint-disable-next-line @typescript-eslint/no-unused-vars
         const { goal_type, ...editData } = baseData;
-        await (props as EditProps).onSubmit(editData);
+        await (props as EditProps).onSubmit(editData as GoalUpdate);
       } else {
-        await (props as CreateProps).onSubmit(baseData);
+        await (props as CreateProps).onSubmit(baseData as GoalCreate);
       }
       onClose();
     } catch {
@@ -150,11 +153,14 @@ export function GoalModal(props: GoalModalProps) {
     }
   };
 
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4 backdrop-blur-sm">
-      <div className="surface-card w-full max-w-md flex flex-col max-h-[calc(100vh-2rem)] overflow-hidden rounded-2xl">
-        {/* Fixed Header */}
-        <div className="flex items-center justify-between border-b border-border p-6 pb-4 flex-shrink-0">
+  const modal = (
+    <div className="fixed inset-0 z-50 flex items-center justify-center overflow-hidden bg-black/25 p-4">
+      <div
+        className="surface-card flex w-full max-w-md flex-col overflow-hidden rounded-2xl"
+        style={{ maxHeight: "calc(100dvh - 2rem)" }}
+      >
+        {/* Header – never scrolls */}
+        <div className="flex shrink-0 items-center justify-between border-b border-border px-6 py-5">
           <h2 className="text-h3 font-semibold">{isEditing ? "Edit goal" : "Create new goal"}</h2>
           <button
             onClick={onClose}
@@ -165,15 +171,15 @@ export function GoalModal(props: GoalModalProps) {
           </button>
         </div>
 
-        {/* Scrollable Form Content */}
-        <div className="flex-1 overflow-y-auto min-h-0 px-6">
+        {/* Scrollable body */}
+        <div className="min-h-0 flex-1 overflow-y-auto px-6 pt-6">
           {error ? (
-            <div className="mt-4 rounded-xl bg-destructive/10 p-3 text-caption text-destructive">
+            <div className="rounded-xl bg-destructive/10 p-3 text-caption text-destructive">
               {getDashboardErrorMessage(error)}
             </div>
           ) : null}
 
-          <form onSubmit={handleSubmit} className="mt-5 space-y-3 pb-6">
+          <form onSubmit={handleSubmit} className="space-y-3 pb-6" ref={formRef}>
             <div>
               <label className="text-label block uppercase text-subtle">Title</label>
               <input
@@ -192,13 +198,13 @@ export function GoalModal(props: GoalModalProps) {
                 value={goalType}
                 onChange={(e) => setGoalType(e.target.value as GoalType)}
                 className="mt-1 h-10 w-full rounded-2xl border border-border bg-background px-4 text-caption outline-none focus:border-violet"
+                disabled={isEditing}
               >
-                <option value="rating">Rating</option>
                 <option value="problems">Problems</option>
                 <option value="topic">Topic</option>
+                <option value="rating">Rating</option>
                 <option value="consistency">Consistency</option>
                 <option value="contest">Contest</option>
-                <option value="placement">Placement</option>
               </select>
             </div>
 
@@ -221,40 +227,23 @@ export function GoalModal(props: GoalModalProps) {
               </div>
             )}
 
-            {/* Topic fields - required for topic goals */}
+            {/* Topic selector - required for topic goals */}
             {goalType === "topic" && (
-              <>
-                <div>
-                  <label className="text-label block uppercase text-subtle">
-                    Topic slug (required)
-                  </label>
-                  <input
-                    type="text"
-                    required
-                    placeholder="e.g. dynamic-programming"
-                    value={topicSlug}
-                    onChange={(e) => setTopicSlug(e.target.value)}
-                    className="mt-1 h-10 w-full rounded-2xl border border-border bg-background px-4 text-caption outline-none focus:border-violet"
-                  />
-                </div>
-                <div>
-                  <label className="text-label block uppercase text-subtle">
-                    Topic name (required)
-                  </label>
-                  <input
-                    type="text"
-                    required
-                    placeholder="e.g. Dynamic Programming"
-                    value={topicName}
-                    onChange={(e) => setTopicName(e.target.value)}
-                    className="mt-1 h-10 w-full rounded-2xl border border-border bg-background px-4 text-caption outline-none focus:border-violet"
-                  />
-                </div>
-              </>
+              <div>
+                <label className="text-label block uppercase text-subtle">Topic (required)</label>
+                <TopicSelector
+                  value={topicSlug}
+                  onChange={(slug, name) => {
+                    setTopicSlug(slug);
+                    setTopicName(name);
+                  }}
+                  platform={platform}
+                />
+              </div>
             )}
 
-            {/* Difficulty filter - optional for problems and placement */}
-            {(goalType === "problems" || goalType === "placement") && (
+            {/* Difficulty filter - optional for problems */}
+            {goalType === "problems" && (
               <div>
                 <label className="text-label block uppercase text-subtle">
                   Difficulty filter (optional)
@@ -275,7 +264,9 @@ export function GoalModal(props: GoalModalProps) {
             )}
 
             <div>
-              <label className="text-label block uppercase text-subtle">Target value</label>
+              <label className="text-label block uppercase text-subtle">
+                {goalType === "consistency" ? "Target active days" : "Target value"}
+              </label>
               <input
                 type="number"
                 min={1}
@@ -323,8 +314,8 @@ export function GoalModal(props: GoalModalProps) {
           </form>
         </div>
 
-        {/* Fixed Footer */}
-        <div className="flex justify-end gap-3 p-6 pt-4 border-t border-border flex-shrink-0">
+        {/* Footer – never scrolls */}
+        <div className="flex shrink-0 justify-end gap-3 border-t border-border px-6 py-4">
           <ActionButton variant="quiet" type="button" onClick={onClose}>
             Cancel
           </ActionButton>
@@ -333,7 +324,7 @@ export function GoalModal(props: GoalModalProps) {
             disabled={isSubmitting}
             onClick={(e) => {
               e.preventDefault();
-              handleSubmit(e as React.FormEvent<HTMLFormElement>);
+              formRef.current?.requestSubmit();
             }}
           >
             {isSubmitting
@@ -348,4 +339,6 @@ export function GoalModal(props: GoalModalProps) {
       </div>
     </div>
   );
+
+  return createPortal(modal, document.body);
 }

@@ -192,7 +192,9 @@ class GoalProgressCalculator:
     def _calc_topic(self, goal: "Goal") -> int:
         """Return topic-specific solved count.
 
-        LeetCode: uses PlatformTopicStat (profile-level, includes all history).
+        LeetCode: uses PlatformTopicStat (profile-level cumulative count).
+                  Progress is calculated as (current_count - start_value) to exclude
+                  problems solved before the goal was created.
         Codeforces: uses ProblemTopic join, filtered by goal date range.
         """
         if goal.topic_slug is None:
@@ -200,10 +202,12 @@ class GoalProgressCalculator:
 
         platform = goal.platform
         if platform == "leetcode":
-            return self._repo.get_topic_solved_count_leetcode(
+            current_count = self._repo.get_topic_solved_count_leetcode(
                 user_id=goal.user_id,
                 topic_slug=goal.topic_slug,
             )
+            # Calculate progress from the baseline (start_value)
+            return max(0, current_count - goal.start_value)
         elif platform == "codeforces":
             return self._repo.get_topic_solved_count_codeforces(
                 user_id=goal.user_id,
@@ -212,18 +216,20 @@ class GoalProgressCalculator:
                 end_date=goal.deadline,
             )
         else:
-            # Cross-platform: sum both
-            lc = self._repo.get_topic_solved_count_leetcode(
+            # Cross-platform: LeetCode uses baseline, CF uses date filtering
+            lc_current = self._repo.get_topic_solved_count_leetcode(
                 user_id=goal.user_id,
                 topic_slug=goal.topic_slug,
             )
+            lc_progress = max(0, lc_current - goal.start_value)
+            
             cf = self._repo.get_topic_solved_count_codeforces(
                 user_id=goal.user_id,
                 topic_slug=goal.topic_slug,
                 start_date=goal.start_date,
                 end_date=goal.deadline,
             )
-            return lc + cf
+            return lc_progress + cf
 
     # ---- CONSISTENCY ----
 

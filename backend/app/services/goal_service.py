@@ -57,17 +57,31 @@ class GoalService:
         return goals
 
     def create_goal(self, data: GoalCreate, user_id: int) -> Goal:
-        """Create a goal and record start_value for RATING baseline."""
+        """Create a goal and record start_value for RATING baseline.
+        
+        The effective start date is used to ensure only activity from that point
+        forward contributes to progress, preventing historical data from immediately
+        completing new goals.
+        
+        For TOPIC goals on LeetCode, we record the current topic count as start_value
+        so we can calculate progress as (current_count - start_value).
+        """
         goal_data = data.model_dump()
 
-        # Record the start value for RATING goals (current rating at creation time)
+        # Record the start value for baseline-based progress tracking
         start_value = 0
         if data.goal_type == GoalType.RATING and data.platform:
             from app.repositories.goal_progress_repository import GoalProgressRepository
             repo = GoalProgressRepository(self.db)
             start_value = repo.get_rating_for_platform(user_id, data.platform)
+        elif data.goal_type == GoalType.TOPIC and data.platform == "leetcode" and data.topic_slug:
+            # For LeetCode topics, record current count as baseline
+            from app.repositories.goal_progress_repository import GoalProgressRepository
+            repo = GoalProgressRepository(self.db)
+            start_value = repo.get_topic_solved_count_leetcode(user_id, data.topic_slug)
 
-        # Default start_date to today if not provided
+        # Default start_date to today if not provided - this is the effective start
+        # date from which progress counting begins
         if goal_data.get("start_date") is None:
             goal_data["start_date"] = date.today()
 
