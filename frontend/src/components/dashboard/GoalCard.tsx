@@ -19,8 +19,8 @@ export function GoalCard({
   onDelete?: (id: number) => void;
   isDeleting?: boolean;
 }) {
-  const pct = Math.min(100, Math.max(0, Math.round(progress.percentage)));
-  const isAchieved = progress.is_achieved || pct >= 100;
+  const pct = Math.min(100, Math.max(0, Math.round(progress.progress_percentage)));
+  const isAchieved = progress.is_completed || pct >= 100;
   const tint = isAchieved ? "bg-green-soft" : "bg-card";
   const bar = isAchieved ? "var(--success)" : "var(--pastel-blue)";
 
@@ -59,8 +59,7 @@ export function GoalCard({
         <AnimatedBar value={pct} color={bar} />
         <div className="mt-3 flex items-center justify-between">
           <p className="text-label text-subtle">
-            {progress.calculated_progress.toLocaleString()} of{" "}
-            {progress.target_value.toLocaleString()}
+            {progress.current_value.toLocaleString()} of {progress.target_value.toLocaleString()}
             {progress.remaining > 0 && (
               <span className="ml-1 text-subtle/70">· {progress.remaining} remaining</span>
             )}

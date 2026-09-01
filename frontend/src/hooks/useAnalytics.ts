@@ -22,10 +22,13 @@ export const analyticsQueryKeys = {
   difficulty: (profileId: number) => ["analytics", profileId, "difficulty"] as const,
   rating: (profileId: number) => ["analytics", profileId, "rating"] as const,
   contests: (profileId: number) => ["analytics", profileId, "contests"] as const,
-  aggregateRating: (platforms: Platform[]) => ["analytics", "aggregate", "rating", [...platforms].sort().join(",")] as const,
-  aggregateTopic: (platforms: Platform[]) => ["analytics", "aggregate", "topic", [...platforms].sort().join(",")] as const,
-  aggregateDifficulty: (platforms: Platform[]) => ["analytics", "aggregate", "difficulty", [...platforms].sort().join(",")] as const,
-  aggregateActivity: (platforms: Platform[], rangeDays?: number) => 
+  aggregateRating: (platforms: Platform[]) =>
+    ["analytics", "aggregate", "rating", [...platforms].sort().join(",")] as const,
+  aggregateTopic: (platforms: Platform[]) =>
+    ["analytics", "aggregate", "topic", [...platforms].sort().join(",")] as const,
+  aggregateDifficulty: (platforms: Platform[]) =>
+    ["analytics", "aggregate", "difficulty", [...platforms].sort().join(",")] as const,
+  aggregateActivity: (platforms: Platform[], rangeDays?: number) =>
     ["analytics", "aggregate", "activity", [...platforms].sort().join(","), rangeDays] as const,
 };
 
@@ -36,7 +39,7 @@ const RANGE_DAYS: Record<TimeRange, number | null> = {
   "30D": 30,
   "90D": 90,
   "1Y": 365,
-  "All": null,
+  All: null,
 };
 
 export function useAnalytics(selectedPlatforms: Platform[] = [], timeRange: TimeRange = "All") {
@@ -61,9 +64,10 @@ export function useAnalytics(selectedPlatforms: Platform[] = [], timeRange: Time
 
   const profiles = profilesQuery.data ?? [];
   const isLoadingProfiles = profilesQuery.isLoading;
-  
+
   // Use selected platforms if provided, otherwise use all available platforms
-  const activePlatforms = selectedPlatforms.length > 0 ? selectedPlatforms : profiles.map(p => p.platform);
+  const activePlatforms =
+    selectedPlatforms.length > 0 ? selectedPlatforms : profiles.map((p) => p.platform);
   const rangeDays = RANGE_DAYS[timeRange];
 
   // Aggregate queries (multi-platform)

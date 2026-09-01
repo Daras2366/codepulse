@@ -5,20 +5,20 @@ import { hasAccessToken } from "@/api/client";
 import {
   createGoal,
   deleteGoal,
-  getGoalProgress,
   getGoals,
   updateGoal,
   type GoalCreate,
   type GoalProgress,
+  type GoalStatus,
   type GoalUpdate,
 } from "@/api/goals";
 
 export const goalsQueryKeys = {
   all: ["goals"] as const,
-  progress: (goalId: number) => ["goals", goalId, "progress"] as const,
+  filtered: (status?: GoalStatus) => ["goals", "filtered", status] as const,
 };
 
-export function useGoals() {
+export function useGoals(statusFilter?: GoalStatus) {
   const queryClient = useQueryClient();
   const [authenticated, setAuthenticated] = useState(hasAccessToken);
 
@@ -34,25 +34,12 @@ export function useGoals() {
   }, []);
 
   const goalsQuery = useQuery({
-    queryKey: goalsQueryKeys.all,
-    queryFn: getGoals,
+    queryKey: goalsQueryKeys.filtered(statusFilter),
+    queryFn: () => getGoals(statusFilter),
     enabled: authenticated,
   });
 
-  const goalsList = goalsQuery.data ?? [];
-
-  // Query progress for each goal
-  const progressQueries = useQuery({
-    queryKey: ["goals", "all-progress", goalsList.map((g) => g.id)],
-    queryFn: async () => {
-      if (goalsList.length === 0) return [];
-      const results = await Promise.all(
-        goalsList.map((g) => getGoalProgress(g.id).catch(() => null)),
-      );
-      return results.filter((r): r is GoalProgress => r !== null);
-    },
-    enabled: authenticated && goalsList.length > 0,
-  });
+  const progressList = goalsQuery.data ?? [];
 
   const createMutation = useMutation({
     mutationFn: (data: GoalCreate) => createGoal(data),
@@ -78,13 +65,11 @@ export function useGoals() {
 
   return {
     authenticated,
-    goals: goalsList,
-    progressList: progressQueries.data ?? [],
-    isLoading: goalsQuery.isLoading || (goalsList.length > 0 && progressQueries.isLoading),
-    error: goalsQuery.error || progressQueries.error,
+    progressList,
+    isLoading: goalsQuery.isLoading,
+    error: goalsQuery.error,
     refetch: () => {
       void goalsQuery.refetch();
-      void progressQueries.refetch();
     },
     createGoal: createMutation.mutateAsync,
     isCreating: createMutation.isPending,

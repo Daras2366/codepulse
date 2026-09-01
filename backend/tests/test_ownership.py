@@ -154,7 +154,7 @@ class OwnershipTests(TestCase):
         self.goal_b = Goal(
             user_id=self.user_b.id,
             title="B's goal",
-            goal_type=GoalType.WEEKLY,
+            goal_type=GoalType.PROBLEMS,
             target_value=10,
             status=GoalStatus.ACTIVE,
         )
@@ -296,7 +296,7 @@ class OwnershipTests(TestCase):
             "/goals/",
             json={
                 "title": "A's goal",
-                "goal_type": "weekly",
+                "goal_type": "problems",
                 "target_value": 5,
             },
         )
@@ -314,7 +314,7 @@ class OwnershipTests(TestCase):
             "/goals/",
             json={
                 "title": "New goal",
-                "goal_type": "daily",
+                "goal_type": "problems",
                 "target_value": 3,
             },
         )

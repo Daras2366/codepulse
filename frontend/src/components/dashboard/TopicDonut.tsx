@@ -121,9 +121,7 @@ function buildDonutSlices(
 
   if (combinedOtherCount > 0) {
     const otherPct =
-      totalAssignments > 0
-        ? Math.round((combinedOtherCount / totalAssignments) * 1000) / 10
-        : 0;
+      totalAssignments > 0 ? Math.round((combinedOtherCount / totalAssignments) * 1000) / 10 : 0;
 
     slices.push({
       name: "Other",
@@ -212,23 +210,18 @@ function CoverageNote({
 
     if (lines.length === 0) return null;
 
-    return (
-      <p className="text-label mt-4 text-subtle">
-        {lines.join(" ")}
-      </p>
-    );
+    return <p className="text-label mt-4 text-subtle">{lines.join(" ")}</p>;
   }
 
   // --- Fallback: aggregate note when platform_coverage isn't present ---
-  const hasPartialCoverage =
-    tagged_solved > 0 && total_solved > 0 && tagged_solved < total_solved;
+  const hasPartialCoverage = tagged_solved > 0 && total_solved > 0 && tagged_solved < total_solved;
 
   if (!hasPartialCoverage) return null;
 
   return (
     <p className="text-label mt-4 text-subtle">
-      Topic data available for {tagged_solved.toLocaleString()} of{" "}
-      {total_solved.toLocaleString()} solved problems.
+      Topic data available for {tagged_solved.toLocaleString()} of {total_solved.toLocaleString()}{" "}
+      solved problems.
     </p>
   );
 }
@@ -260,8 +253,7 @@ export function TopicDonut({
 
   const hasTopicData = slices.length > 0;
 
-  const showCenterFraction =
-    taggedSolved > 0 && totalSolved > 0 && taggedSolved < totalSolved;
+  const showCenterFraction = taggedSolved > 0 && totalSolved > 0 && taggedSolved < totalSolved;
 
   return (
     <Panel title="Topic breakdown" caption="What you're solving across DSA topics">
@@ -366,9 +358,7 @@ export function TopicDonut({
       {/* Coverage note                                                     */}
       {/* ================================================================= */}
 
-      {topicData && (
-        <CoverageNote topicData={topicData} hasTopicData={hasTopicData} />
-      )}
+      {topicData && <CoverageNote topicData={topicData} hasTopicData={hasTopicData} />}
     </Panel>
   );
 }

@@ -178,21 +178,27 @@ export function getAggregateRatingProgression(platforms?: string[]) {
   const params = new URLSearchParams();
   if (platforms && platforms.length > 0) params.append("platforms", platforms.join(","));
   const queryString = params.toString();
-  return apiRequest<AggregateRatingProgression>(`/analytics/aggregate/rating-progression${queryString ? `?${queryString}` : ""}`);
+  return apiRequest<AggregateRatingProgression>(
+    `/analytics/aggregate/rating-progression${queryString ? `?${queryString}` : ""}`,
+  );
 }
 
 export function getAggregateTopicBreakdown(platforms?: string[]) {
   const params = new URLSearchParams();
   if (platforms && platforms.length > 0) params.append("platforms", platforms.join(","));
   const queryString = params.toString();
-  return apiRequest<AggregateTopicBreakdown>(`/analytics/aggregate/topic-breakdown${queryString ? `?${queryString}` : ""}`);
+  return apiRequest<AggregateTopicBreakdown>(
+    `/analytics/aggregate/topic-breakdown${queryString ? `?${queryString}` : ""}`,
+  );
 }
 
 export function getAggregateDifficultyDistribution(platforms?: string[]) {
   const params = new URLSearchParams();
   if (platforms && platforms.length > 0) params.append("platforms", platforms.join(","));
   const queryString = params.toString();
-  return apiRequest<AggregateDifficultyDistribution>(`/analytics/aggregate/difficulty-distribution${queryString ? `?${queryString}` : ""}`);
+  return apiRequest<AggregateDifficultyDistribution>(
+    `/analytics/aggregate/difficulty-distribution${queryString ? `?${queryString}` : ""}`,
+  );
 }
 
 export function getAggregateSubmissionActivity(platforms?: string[], rangeDays?: number) {
@@ -200,5 +206,7 @@ export function getAggregateSubmissionActivity(platforms?: string[], rangeDays?:
   if (platforms && platforms.length > 0) params.append("platforms", platforms.join(","));
   if (rangeDays) params.append("range_days", rangeDays.toString());
   const queryString = params.toString();
-  return apiRequest<AggregateSubmissionActivity>(`/analytics/aggregate/submission-activity${queryString ? `?${queryString}` : ""}`);
+  return apiRequest<AggregateSubmissionActivity>(
+    `/analytics/aggregate/submission-activity${queryString ? `?${queryString}` : ""}`,
+  );
 }

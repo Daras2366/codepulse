@@ -2,7 +2,7 @@ import { useState } from "react";
 import { createFileRoute } from "@tanstack/react-router";
 import { Plus } from "lucide-react";
 
-import type { GoalProgress } from "@/api/goals";
+import type { GoalProgress, GoalStatus } from "@/api/goals";
 import { GoalCard } from "@/components/dashboard/GoalCard";
 import { GoalModal } from "@/components/goals/GoalModal";
 import { AppShell } from "@/components/layout/AppShell";
@@ -26,6 +26,8 @@ export const Route = createFileRoute("/goals")({
 });
 
 function Goals() {
+  const [statusFilter, setStatusFilter] = useState<GoalStatus | undefined>(undefined);
+
   const {
     authenticated,
     progressList,
@@ -40,10 +42,17 @@ function Goals() {
     updateError,
     deleteGoal,
     isDeleting,
-  } = useGoals();
+  } = useGoals(statusFilter);
 
   const [isCreateOpen, setIsCreateOpen] = useState(false);
   const [editingGoal, setEditingGoal] = useState<GoalProgress | null>(null);
+
+  const filterOptions = [
+    { label: "All", value: undefined },
+    { label: "Active", value: "active" as GoalStatus },
+    { label: "Completed", value: "completed" as GoalStatus },
+    { label: "Overdue", value: "overdue" as GoalStatus },
+  ];
 
   if (!authenticated) {
     return (
@@ -76,17 +85,25 @@ function Goals() {
     );
   }
 
-  const activeGoals = progressList.filter((g) => !g.is_achieved);
-  const completedGoals = progressList.filter((g) => g.is_achieved);
-
   return (
     <AppShell title="Goals" subtitle="Small targets, kept visible.">
       <div className="space-y-6">
         <div className="flex flex-wrap items-center justify-between gap-4">
-          <p className="text-body text-muted-foreground">
-            {activeGoals.length} active goal{activeGoals.length === 1 ? "" : "s"} ·{" "}
-            {completedGoals.length} achieved
-          </p>
+          <div className="flex flex-wrap items-center gap-2">
+            {filterOptions.map((option) => (
+              <button
+                key={option.label}
+                onClick={() => setStatusFilter(option.value)}
+                className={`rounded-full px-4 py-2 text-caption font-semibold transition-colors ${
+                  statusFilter === option.value
+                    ? "bg-primary text-primary-foreground"
+                    : "bg-muted text-muted-foreground hover:bg-muted/80"
+                }`}
+              >
+                {option.label}
+              </button>
+            ))}
+          </div>
           <button
             onClick={() => setIsCreateOpen(true)}
             className="inline-flex items-center gap-2 rounded-full bg-primary px-5 py-2.5 text-caption font-semibold text-primary-foreground press"

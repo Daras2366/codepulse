@@ -48,9 +48,9 @@ export class AuthError extends Error {
  */
 export function setAccessToken(token: string): void {
   if (typeof window === "undefined") return;
-  
+
   window.localStorage.setItem(ACCESS_TOKEN_KEY, token);
-  
+
   // Dispatch custom event to notify other components
   window.dispatchEvent(new Event("codepulse-auth-change"));
 }
@@ -60,9 +60,9 @@ export function setAccessToken(token: string): void {
  */
 export function clearAccessToken(): void {
   if (typeof window === "undefined") return;
-  
+
   window.localStorage.removeItem(ACCESS_TOKEN_KEY);
-  
+
   // Dispatch custom event to notify other components
   window.dispatchEvent(new Event("codepulse-auth-change"));
 }
@@ -72,7 +72,7 @@ export function clearAccessToken(): void {
  */
 export async function register(data: RegisterRequest): Promise<UserResponse> {
   let response: Response;
-  
+
   try {
     response = await fetch(`${API_BASE_URL}/auth/register`, {
       method: "POST",
@@ -106,7 +106,7 @@ export async function register(data: RegisterRequest): Promise<UserResponse> {
  */
 export async function login(data: LoginRequest): Promise<TokenResponse> {
   let response: Response;
-  
+
   try {
     response = await fetch(`${API_BASE_URL}/auth/login`, {
       method: "POST",
@@ -133,10 +133,10 @@ export async function login(data: LoginRequest): Promise<TokenResponse> {
   }
 
   const tokenData = (await response.json()) as TokenResponse;
-  
+
   // Automatically store the token
   setAccessToken(tokenData.access_token);
-  
+
   return tokenData;
 }
 

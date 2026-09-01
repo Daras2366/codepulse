@@ -35,10 +35,10 @@ function AuthPage() {
     mutationFn: (data: RegisterRequest) => register(data),
     onSuccess: async (user) => {
       // After registration, automatically log in
-      const formData = (document.getElementById("auth-form") as HTMLFormElement);
+      const formData = document.getElementById("auth-form") as HTMLFormElement;
       const email = (formData.elements.namedItem("email") as HTMLInputElement).value;
       const password = (formData.elements.namedItem("password") as HTMLInputElement).value;
-      
+
       try {
         await login({ email, password });
         void navigate({ to: "/" });
@@ -62,7 +62,7 @@ function AuthPage() {
         username: formData.get("username") as string,
         email: formData.get("email") as string,
         password: formData.get("password") as string,
-        full_name: formData.get("full_name") as string || undefined,
+        full_name: (formData.get("full_name") as string) || undefined,
       });
     }
   };

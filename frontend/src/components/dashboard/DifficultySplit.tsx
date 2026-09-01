@@ -46,9 +46,7 @@ export function DifficultySplit({
               return (
                 <li key={d.difficulty}>
                   <div className="mb-2 flex items-center justify-between">
-                    <span className="text-caption text-muted-foreground">
-                      {d.difficulty}
-                    </span>
+                    <span className="text-caption text-muted-foreground">{d.difficulty}</span>
                     <span className="text-caption font-semibold">
                       {d.solved_count.toLocaleString()} · {d.percentage}%
                     </span>
@@ -67,7 +65,10 @@ export function DifficultySplit({
           {platformTotals.length > 0 && (
             <div className="mt-8 grid gap-4 border-t border-border pt-6 sm:grid-cols-2">
               {platformTotals.map((p) => (
-                <div key={p.platform} className="flex items-center justify-between rounded-2xl bg-muted px-4 py-3">
+                <div
+                  key={p.platform}
+                  className="flex items-center justify-between rounded-2xl bg-muted px-4 py-3"
+                >
                   <span className="text-caption text-muted-foreground capitalize">
                     {p.platform}
                   </span>

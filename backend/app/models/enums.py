@@ -24,17 +24,21 @@ class SubmissionStatus(str, Enum):
 
 
 class GoalType(str, Enum):
-    DAILY = "daily"
-    WEEKLY = "weekly"
-    MONTHLY = "monthly"
+    RATING = "rating"
+    PROBLEMS = "problems"
+    TOPIC = "topic"
+    CONSISTENCY = "consistency"
+    CONTEST = "contest"
+    PLACEMENT = "placement"
 
 
 class GoalStatus(str, Enum):
     ACTIVE = "active"
     COMPLETED = "completed"
-    FAILED = "failed"
-    
-    
+    OVERDUE = "overdue"
+    PAUSED = "paused"
+
+
 class AchievementCategory(str, Enum):
     PROBLEM = "problem"
     CONTEST = "contest"
