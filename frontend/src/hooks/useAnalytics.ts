@@ -9,7 +9,6 @@ import {
   getAnalyticsContestPerformance,
   getAnalyticsDifficultyDistribution,
   getAnalyticsRatingProgression,
-  getAnalyticsSubmissionActivity,
   getAnalyticsSummary,
   getAggregateRatingProgression,
 } from "@/api/analytics";

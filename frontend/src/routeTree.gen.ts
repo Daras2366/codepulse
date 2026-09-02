@@ -11,7 +11,6 @@
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as IndexRouteImport } from './routes/index'
 import { Route as AchievementsRouteImport } from './routes/achievements'
-import { Route as ActivityRouteImport } from './routes/activity'
 import { Route as AiCoachRouteImport } from './routes/ai-coach'
 import { Route as AnalyticsRouteImport } from './routes/analytics'
 import { Route as AuthRouteImport } from './routes/auth'
@@ -28,11 +27,6 @@ const IndexRoute = IndexRouteImport.update({
 const AchievementsRoute = AchievementsRouteImport.update({
   id: '/achievements',
   path: '/achievements',
-  getParentRoute: () => rootRouteImport,
-} as any)
-const ActivityRoute = ActivityRouteImport.update({
-  id: '/activity',
-  path: '/activity',
   getParentRoute: () => rootRouteImport,
 } as any)
 const AiCoachRoute = AiCoachRouteImport.update({
@@ -74,7 +68,6 @@ const SettingsRoute = SettingsRouteImport.update({
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/achievements': typeof AchievementsRoute
-  '/activity': typeof ActivityRoute
   '/ai-coach': typeof AiCoachRoute
   '/analytics': typeof AnalyticsRoute
   '/auth': typeof AuthRoute
@@ -86,7 +79,6 @@ export interface FileRoutesByFullPath {
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/achievements': typeof AchievementsRoute
-  '/activity': typeof ActivityRoute
   '/ai-coach': typeof AiCoachRoute
   '/analytics': typeof AnalyticsRoute
   '/auth': typeof AuthRoute
@@ -99,7 +91,6 @@ export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
   '/achievements': typeof AchievementsRoute
-  '/activity': typeof ActivityRoute
   '/ai-coach': typeof AiCoachRoute
   '/analytics': typeof AnalyticsRoute
   '/auth': typeof AuthRoute
@@ -113,7 +104,6 @@ export interface FileRouteTypes {
   fullPaths:
     | '/'
     | '/achievements'
-    | '/activity'
     | '/ai-coach'
     | '/analytics'
     | '/auth'
@@ -125,7 +115,6 @@ export interface FileRouteTypes {
   to:
     | '/'
     | '/achievements'
-    | '/activity'
     | '/ai-coach'
     | '/analytics'
     | '/auth'
@@ -137,7 +126,6 @@ export interface FileRouteTypes {
     | '__root__'
     | '/'
     | '/achievements'
-    | '/activity'
     | '/ai-coach'
     | '/analytics'
     | '/auth'
@@ -150,7 +138,6 @@ export interface FileRouteTypes {
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
   AchievementsRoute: typeof AchievementsRoute
-  ActivityRoute: typeof ActivityRoute
   AiCoachRoute: typeof AiCoachRoute
   AnalyticsRoute: typeof AnalyticsRoute
   AuthRoute: typeof AuthRoute
@@ -174,13 +161,6 @@ declare module '@tanstack/react-router' {
       path: '/achievements'
       fullPath: '/achievements'
       preLoaderRoute: typeof AchievementsRouteImport
-      parentRoute: typeof rootRouteImport
-    }
-    '/activity': {
-      id: '/activity'
-      path: '/activity'
-      fullPath: '/activity'
-      preLoaderRoute: typeof ActivityRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/ai-coach': {
@@ -238,7 +218,6 @@ declare module '@tanstack/react-router' {
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   AchievementsRoute: AchievementsRoute,
-  ActivityRoute: ActivityRoute,
   AiCoachRoute: AiCoachRoute,
   AnalyticsRoute: AnalyticsRoute,
   AuthRoute: AuthRoute,

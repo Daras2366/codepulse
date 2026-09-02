@@ -1,6 +1,5 @@
 import { Link, useRouterState } from "@tanstack/react-router";
 import {
-  Activity,
   Bell,
   Bot,
   ChevronsLeft,
@@ -29,7 +28,6 @@ const nav = [
   { to: "/analytics", label: "Analytics", icon: LineChart },
   { to: "/platforms", label: "Platforms", icon: Gauge },
   { to: "/contests", label: "Contests", icon: Trophy },
-  { to: "/activity", label: "Submission Activity", icon: Activity },
   { to: "/goals", label: "Goals", icon: Flag },
   { to: "/achievements", label: "Achievements", icon: Medal },
   { to: "/ai-coach", label: "AI Coach", icon: Bot },
