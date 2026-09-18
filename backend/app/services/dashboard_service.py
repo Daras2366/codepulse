@@ -6,11 +6,16 @@ from app.models.platform_profile import PlatformProfile
 from app.repositories.dashboard_repository import DashboardRepository
 from app.repositories.platform_profile_repository import PlatformProfileRepository
 from app.schemas.dashboard import (
+    DashboardAggregateContestsResponse,
+    DashboardAggregateOverview,
+    DashboardAggregateResponse,
+    DashboardAggregateSubmissionsResponse,
     DashboardContestItem,
     DashboardContestsResponse,
     DashboardDifficultyCount,
     DashboardOverviewResponse,
     DashboardProblemsResponse,
+    DashboardPlatformSummary,
     DashboardRatingHistoryItem,
     DashboardRatingResponse,
     DashboardRecentSubmission,
@@ -52,6 +57,135 @@ class DashboardService:
             max_rating=profile.max_rating,
             rank=profile.rank,
             last_synced_at=profile.last_synced_at,
+        )
+
+    def get_aggregate_dashboard(
+        self,
+        user_id: int,
+        recent_limit: int = 20,
+    ) -> DashboardAggregateResponse:
+        """Return one authenticated user's centralized dashboard data."""
+        profiles = self.profiles.get_by_user_id(user_id)
+        profile_ids = [profile.id for profile in profiles]
+
+        if not profile_ids:
+            empty_summary = DashboardSubmissionSummary(
+                total_submissions=0,
+                accepted_submissions=0,
+                rejected_submissions=0,
+            )
+            return DashboardAggregateResponse(
+                overview=DashboardAggregateOverview(
+                    total_problems_solved=0,
+                    total_submissions=0,
+                    contests_attended=0,
+                    connected_platforms=0,
+                    platforms=[],
+                ),
+                submissions=DashboardAggregateSubmissionsResponse(
+                    summary=empty_summary,
+                    recent_submissions=[],
+                    activity=[],
+                ),
+                contests=DashboardAggregateContestsResponse(
+                    contests_attended=0,
+                    contests=[],
+                ),
+            )
+
+        summary = self.dashboard.get_aggregate_submission_summary(profile_ids)
+        profile_by_id = {profile.id: profile for profile in profiles}
+        recent_submissions = [
+            DashboardRecentSubmission(
+                id=submission.id,
+                platform_submission_id=submission.platform_submission_id,
+                submitted_at=submission.submitted_at,
+                language=submission.language,
+                status=submission.status,
+                problem_id=problem.id,
+                problem_title=problem.title,
+                problem_url=problem.problem_url,
+                difficulty=problem.difficulty,
+                contest_id=submission.contest_id,
+                contest_name=contest.title if contest is not None else None,
+                platform=profile_by_id[submission.profile_id].platform,
+            )
+            for submission, problem, contest in self.dashboard.get_aggregate_recent_submissions(
+                profile_ids,
+                recent_limit,
+            )
+        ]
+        activity = [
+            DashboardSubmissionActivity(
+                activity_date=row.activity_date,
+                total_submissions=int(row.total_submissions),
+                accepted_submissions=int(row.accepted_submissions),
+                rejected_submissions=(
+                    int(row.total_submissions) - int(row.accepted_submissions)
+                ),
+            )
+            for row in self.dashboard.get_aggregate_submission_activity(profile_ids)
+        ]
+        contests = [
+            DashboardContestItem(
+                contest_id=contest.id,
+                contest_name=contest.title,
+                contest_url=contest.contest_url,
+                start_time=contest.start_time,
+                duration_minutes=contest.duration_minutes,
+                rank=participation.rank,
+                old_rating=participation.old_rating,
+                new_rating=participation.new_rating,
+                rating_change=participation.rating_change,
+                solved=participation.solved,
+                penalty=participation.penalty,
+                platform=contest.platform.value,
+            )
+            for participation, contest in self.dashboard.get_aggregate_contest_history(profile_ids)
+        ]
+        platforms = [
+            DashboardPlatformSummary(
+                profile_id=profile.id,
+                platform=profile.platform,
+                username=profile.username,
+                total_problems_solved=int(profile.problems_solved),
+                total_submissions=int(
+                    self.dashboard.get_submission_summary(profile.id).total_submissions
+                ),
+                contests_attended=int(profile.contests_attended),
+                current_rating=profile.current_rating,
+                max_rating=profile.max_rating,
+                rank=profile.rank,
+                last_synced_at=profile.last_synced_at,
+            )
+            for profile in profiles
+        ]
+        accepted_submissions = int(summary.accepted_submissions)
+        total_submissions = int(summary.total_submissions)
+
+        return DashboardAggregateResponse(
+            overview=DashboardAggregateOverview(
+                total_problems_solved=sum(
+                    int(profile.problems_solved) for profile in profiles
+                ),
+                total_submissions=total_submissions,
+                contests_attended=sum(int(profile.contests_attended) for profile in profiles),
+                connected_platforms=len(profiles),
+                platforms=platforms,
+            ),
+            submissions=DashboardAggregateSubmissionsResponse(
+                summary=DashboardSubmissionSummary(
+                    total_submissions=total_submissions,
+                    accepted_submissions=accepted_submissions,
+                    rejected_submissions=total_submissions - accepted_submissions,
+                ),
+                recent_submissions=recent_submissions,
+                activity=activity,
+            ),
+            contests=DashboardAggregateContestsResponse(
+                contests_attended=len(contests),
+                contests=contests,
+            ),
         )
 
     def get_rating(
@@ -140,6 +274,7 @@ class DashboardService:
                 difficulty=problem.difficulty,
                 contest_id=submission.contest_id,
                 contest_name=contest.title if contest is not None else None,
+                platform=profile.platform,
             )
             for submission, problem, contest in self.dashboard.get_recent_submissions(
                 profile.id,

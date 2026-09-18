@@ -69,7 +69,7 @@ export function Heatmap({
   onRetry,
 }: {
   activity?: GenericActivityItem[] | undefined;
-  totalSubmissions?: number;
+  totalSubmissions?: number | undefined;
   isLoading?: boolean;
   error?: string | undefined;
   onRetry?: (() => void) | undefined;

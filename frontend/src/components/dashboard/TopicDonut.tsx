@@ -70,7 +70,7 @@ const FALLBACK_COLORS = [
 ];
 
 function colorForTopic(topic: string, index: number): string {
-  return TOPIC_COLORS[topic] ?? FALLBACK_COLORS[index % FALLBACK_COLORS.length];
+  return TOPIC_COLORS[topic] ?? FALLBACK_COLORS[index % FALLBACK_COLORS.length] ?? "#D8D4C8";
 }
 
 // ---------------------------------------------------------------------------
@@ -236,9 +236,9 @@ export function TopicDonut({
   error,
   onRetry,
 }: {
-  topicData?: AggregateTopicBreakdown;
+  topicData?: AggregateTopicBreakdown | undefined;
   isLoading?: boolean;
-  error?: string;
+  error?: string | undefined;
   onRetry?: () => void;
 }) {
   const totalSolved = topicData?.total_solved ?? 0;

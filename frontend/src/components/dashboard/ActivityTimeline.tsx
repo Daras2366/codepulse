@@ -1,6 +1,6 @@
 import { CheckCircle2, CircleDot, Flag, Sparkles, Trophy } from "lucide-react";
 
-import type { DashboardSubmissions } from "@/api/dashboard";
+import type { DashboardAggregateSubmissions, DashboardSubmissions } from "@/api/dashboard";
 import { EmptyState, ErrorState, ListSkeleton } from "@/components/ui-kit/motion";
 import { Panel, Pill } from "@/components/ui-kit/Panel";
 
@@ -41,7 +41,7 @@ export function ActivityTimeline({
   onRetry,
 }: {
   limit?: number;
-  submissions?: DashboardSubmissions | undefined;
+  submissions?: DashboardSubmissions | DashboardAggregateSubmissions | undefined;
   isLoading?: boolean;
   error?: string | undefined;
   onRetry?: (() => void) | undefined;
@@ -50,7 +50,7 @@ export function ActivityTimeline({
     ? submissions.recent_submissions.map((submission) => ({
         kind: submission.status === "accepted" ? "solved" : "attempt",
         title: submission.problem_title,
-        meta: `${submission.difficulty} · ${submission.language}`,
+        meta: `${submission.platform} · ${submission.difficulty} · ${submission.language}`,
         time: formatTimestamp(submission.submitted_at),
       }))
     : [];

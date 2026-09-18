@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { hasAccessToken } from "@/api/client";
-import { syncPlatformProfile, type SyncResult } from "@/api/dashboard";
+import { syncPlatformProfile, type Platform, type SyncResult } from "@/api/dashboard";
 import { getMyPlatformProfiles, type PlatformProfile } from "@/api/platform-profiles";
 
 export const platformQueryKeys = {
@@ -31,8 +31,8 @@ export function usePlatforms() {
   });
 
   const syncMutation = useMutation({
-    mutationFn: ({ platform, profileId }: { platform: string; profileId: number }) =>
-      syncPlatformProfile(platform as any, profileId),
+    mutationFn: ({ platform, profileId }: { platform: Platform; profileId: number }) =>
+      syncPlatformProfile(platform, profileId),
     onSuccess: () => {
       // Invalidate all relevant React Query data after a successful sync
       void queryClient.invalidateQueries({ queryKey: ["platform-profiles"] });

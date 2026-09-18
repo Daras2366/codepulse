@@ -64,6 +64,7 @@ class DashboardRecentSubmission(BaseModel):
     difficulty: Difficulty
     contest_id: int | None
     contest_name: str | None
+    platform: Platform
 
 
 class DashboardSubmissionActivity(BaseModel):
@@ -99,3 +100,41 @@ class DashboardContestsResponse(BaseModel):
     profile_id: int
     contests_attended: int
     contests: list[DashboardContestItem]
+
+
+class DashboardPlatformSummary(BaseModel):
+    profile_id: int
+    platform: Platform
+    username: str
+    total_problems_solved: int
+    total_submissions: int
+    contests_attended: int
+    current_rating: int | None
+    max_rating: int | None
+    rank: str | None
+    last_synced_at: datetime | None
+
+
+class DashboardAggregateOverview(BaseModel):
+    total_problems_solved: int
+    total_submissions: int
+    contests_attended: int
+    connected_platforms: int
+    platforms: list[DashboardPlatformSummary]
+
+
+class DashboardAggregateSubmissionsResponse(BaseModel):
+    summary: DashboardSubmissionSummary
+    recent_submissions: list[DashboardRecentSubmission]
+    activity: list[DashboardSubmissionActivity]
+
+
+class DashboardAggregateContestsResponse(BaseModel):
+    contests_attended: int
+    contests: list[DashboardContestItem]
+
+
+class DashboardAggregateResponse(BaseModel):
+    overview: DashboardAggregateOverview
+    submissions: DashboardAggregateSubmissionsResponse
+    contests: DashboardAggregateContestsResponse

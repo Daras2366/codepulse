@@ -39,13 +39,18 @@ class FakeLeetCodeClient:
 
     def fetch_submissions(self, username, limit=100):
         return self.submissions
-    
+
+    def fetch_submissions_paginated(self, username):
+        # For testing, return the same submissions as the old method
+        # This simulates the new paginated API behavior
+        return self.submissions
+
     def fetch_rating_history(self, username):
         return self.rating_history
-    
+
     def fetch_contests(self):
         return []
-    
+
     def fetch_problem_details(self, title_slug):
         # Return mock problem details with topic tags
         mock_details = {
@@ -55,7 +60,7 @@ class FakeLeetCodeClient:
                 "topicTags": [{"name": "Array"}, {"name": "Hash Table"}]
             },
             "add-two-numbers": {
-                "title": "Add Two Numbers", 
+                "title": "Add Two Numbers",
                 "difficulty": "Medium",
                 "topicTags": [{"name": "Linked List"}, {"name": "Math"}]
             }
@@ -228,6 +233,46 @@ class LeetCodeSyncServiceTests(TestCase):
 
         # Verify only one submission exists
         self.assertEqual(self.session.query(Submission).count(), 1)
+
+    def test_remote_submission_ids_prevent_timestamp_slug_collisions(self):
+        """Distinct LeetCode IDs must remain distinct attempts in activity."""
+        profile_data = {
+            "profile": {},
+            "userContestRanking": None,
+            "submitStats": {"acSubmissionNum": [{"difficulty": "All", "count": 1}]},
+        }
+        submissions_data = [
+            {
+                "id": "first-attempt",
+                "timestamp": 1700000000,
+                "statusDisplay": "Accepted",
+                "lang": "Python3",
+                "titleSlug": "two-sum",
+                "title": "Two Sum",
+            },
+            {
+                "id": "second-attempt",
+                "timestamp": 1700000000,
+                "statusDisplay": "Accepted",
+                "lang": "Python3",
+                "titleSlug": "two-sum",
+                "title": "Two Sum",
+            },
+        ]
+
+        result = LeetCodeSyncService(
+            self.session,
+            FakeLeetCodeClient(profile_data, submissions_data),
+        ).sync_profile(self.profile.id, self.user.id)
+
+        self.assertEqual(result.submissions_created, 2)
+        self.assertEqual(
+            {
+                submission.platform_submission_id
+                for submission in self.session.query(Submission).all()
+            },
+            {"first-attempt", "second-attempt"},
+        )
 
     def test_malformed_submission_data_rolls_back_transaction(self):
         """Malformed submission data should roll back the entire transaction."""

@@ -1,14 +1,14 @@
 import { Line, LineChart, ResponsiveContainer, Tooltip, type TooltipProps } from "recharts";
 
-import type { DashboardOverview, DashboardRating } from "@/api/dashboard";
+import type { DashboardOverview, DashboardPlatformSummary, DashboardRating } from "@/api/dashboard";
 import { AnimatedCounter } from "@/components/ui-kit/motion";
 
 export function PlatformCards({
   overview,
   rating,
 }: {
-  overview: DashboardOverview;
-  rating: DashboardRating | undefined;
+  overview: DashboardOverview | DashboardPlatformSummary;
+  rating?: DashboardRating | undefined;
 }) {
   const spark =
     rating?.history.map((item) => ({ rating: item.rating, date: item.recorded_at })) ?? [];
@@ -26,6 +26,18 @@ export function PlatformCards({
       name: "Codeforces",
       tint: "bg-blue-soft",
       color: "var(--pastel-blue)",
+    },
+    codechef: {
+      short: "CC",
+      name: "CodeChef",
+      tint: "bg-green-soft",
+      color: "var(--pastel-green)",
+    },
+    atcoder: {
+      short: "AC",
+      name: "AtCoder",
+      tint: "bg-pink-soft",
+      color: "var(--pastel-pink)",
     },
   };
 

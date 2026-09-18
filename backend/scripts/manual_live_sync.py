@@ -4,7 +4,7 @@ Uses the dev user's JWT stored in codepulse.access_token
 (if available in local storage) OR reads it from a temp env var.
 
 Run:
-    CODEPULSE_TOKEN=<token> ..\.venv\Scripts\python scripts\test_live_sync.py
+    CODEPULSE_TOKEN=<token> ..\.venv\Scripts\python scripts\manual_live_sync.py
 
 IMPORTANT: Do NOT log or expose the token itself.
 """

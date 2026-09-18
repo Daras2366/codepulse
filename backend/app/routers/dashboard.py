@@ -5,6 +5,7 @@ from app.core.database import get_db
 from app.core.deps import get_current_user
 from app.models.user import User
 from app.schemas.dashboard import (
+    DashboardAggregateResponse,
     DashboardContestsResponse,
     DashboardOverviewResponse,
     DashboardProblemsResponse,
@@ -32,6 +33,16 @@ def _raise_dashboard_error(error: Exception) -> None:
         raise HTTPException(status_code=403, detail=str(error)) from error
 
     raise error
+
+
+@router.get("/aggregate", response_model=DashboardAggregateResponse)
+def get_aggregate_dashboard(
+    recent_limit: int = Query(20, ge=1, le=100),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Return the centralized dashboard across every connected platform."""
+    return _get_service(db).get_aggregate_dashboard(current_user.id, recent_limit)
 
 
 @router.get("/{profile_id}/overview", response_model=DashboardOverviewResponse)

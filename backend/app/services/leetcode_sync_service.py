@@ -280,13 +280,24 @@ class LeetCodeSyncService(BaseSyncService):
             ) from exc
 
     def _fetch_remote_submissions(self, username: str) -> list[dict[str, Any]]:
-        """Fetch recent LeetCode submissions."""
+        """Fetch LeetCode submission history using the paginated endpoint.
+
+        Attempts ``submissionList`` with offset/limit pagination first (up to
+        1 000 submissions across all statuses).  Falls back to the bounded
+        ``recentAcSubmissionList`` (≤ 100 accepted-only) if paginated access
+        is blocked for the given username.
+        """
         submissions = self._call_leetcode_api(
-            self.client.fetch_submissions,
+            self.client.fetch_submissions_paginated,
             username,
-            100,
         )
-        return submissions if isinstance(submissions, list) else []
+        result = submissions if isinstance(submissions, list) else []
+        logger.info(
+            "Fetched %d submissions for %s (paginated or fallback)",
+            len(result),
+            username,
+        )
+        return result
 
     def _fetch_remote_rating_history(self, username: str) -> list[dict[str, Any]]:
         """Fetch LeetCode contest rating history."""
@@ -396,11 +407,17 @@ class LeetCodeSyncService(BaseSyncService):
         Returns:
             (problem_created, submission_created, submission_skipped)
         """
-        
-        # Extract submission ID from timestamp (LeetCode doesn't provide unique ID)
-        timestamp_str = str(submission_data.get("timestamp", ""))
-        title_slug = submission_data.get("titleSlug", "unknown")
-        platform_submission_id = f"{timestamp_str}-{title_slug}"
+
+        # Extract submission ID - use actual ID from paginated API if available, otherwise fallback to timestamp+slug
+        submission_id = submission_data.get("id")
+        if submission_id:
+            # Use the actual ID from LeetCode's paginated API
+            platform_submission_id = str(submission_id)
+        else:
+            # Fallback for old API or cases where ID is not available
+            timestamp_str = str(submission_data.get("timestamp", ""))
+            title_slug = submission_data.get("titleSlug", "unknown")
+            platform_submission_id = f"{timestamp_str}-{title_slug}"
 
         # Idempotency check
         existing = self.submissions.get_by_platform_submission_id(

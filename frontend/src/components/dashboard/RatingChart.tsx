@@ -10,9 +10,14 @@ import {
   type TooltipProps,
   XAxis,
   YAxis,
+  type TooltipPayload,
 } from "recharts";
 
-import type { AggregateRatingProgression } from "@/api/analytics";
+import type {
+  AggregateRatingPoint,
+  AggregateRatingProgression,
+  AggregateRatingSeries,
+} from "@/api/analytics";
 import type { DashboardRating } from "@/api/dashboard";
 import type { Platform } from "@/api/dashboard";
 import { ActionButton, ChartSkeleton, EmptyState, ErrorState } from "@/components/ui-kit/motion";
@@ -84,7 +89,7 @@ function ChartTooltip({ active, payload, label }: TooltipProps<number, string>) 
     <div className="surface-card px-4 py-3">
       <p className="text-label uppercase text-subtle">{displayLabel}</p>
       <div className="mt-2 space-y-1.5">
-        {sorted.map((p: any) => (
+        {sorted.map((p: TooltipPayload<number, string>) => (
           <div key={p.dataKey} className="flex items-center gap-2.5">
             <span className="h-2 w-2 rounded-full" style={{ background: p.stroke }} />
             <span className="text-caption text-muted-foreground">{p.name}</span>
@@ -94,6 +99,15 @@ function ChartTooltip({ active, payload, label }: TooltipProps<number, string>) 
       </div>
     </div>
   );
+}
+
+interface ChartDataPoint {
+  timestamp: number;
+  [platform: string]: number | null | undefined;
+}
+
+interface PlatformDataMap {
+  [platform: string]: AggregateRatingSeries;
 }
 
 interface RatingChartProps {
@@ -156,9 +170,9 @@ export function RatingChart({
     }
   }
 
-  let data: any[] = [];
-  let lines: any[] = [];
-  let legend: any = null;
+  let data: ChartDataPoint[] = [];
+  let lines: React.ReactNode[] = [];
+  let legend: React.ReactNode = null;
 
   if (aggregateRating) {
     // Aggregate mode: multiple lines for each platform with forward-fill
@@ -172,11 +186,11 @@ export function RatingChart({
 
     // Collect all rating events with actual timestamps
     const allEvents: Array<{ timestamp: Date; platform: string; rating: number }> = [];
-    const platformDataMap: Record<string, any> = {};
+    const platformDataMap: PlatformDataMap = {};
 
-    aggregateRating.series.forEach((series: any) => {
+    aggregateRating.series.forEach((series: AggregateRatingSeries) => {
       platformDataMap[series.platform] = series;
-      series.history.forEach((item: any) => {
+      series.history.forEach((item: AggregateRatingPoint) => {
         const dateObj = normalizeDate(item.date);
         // Filter by time range if specified
         if (!cutoffDate || dateObj >= cutoffDate) {
@@ -239,7 +253,7 @@ export function RatingChart({
 
     // Build chart data with actual timestamps
     data = uniqueTimestamps.map((timestamp, index) => {
-      const point: any = { timestamp };
+      const point: ChartDataPoint = { timestamp };
       Object.keys(platformDataMap).forEach((platform) => {
         point[platform] = platformRatings[platform][index];
       });
@@ -434,7 +448,11 @@ export function RatingChart({
                 axisLine={false}
                 tick={{ fill: "var(--subtle)", fontSize: 12 }}
                 dy={10}
-                tickFormatter={(value) => formatDate(new Date(value))}
+                minTickGap={80}
+                tickFormatter={(value) => {
+                  const label = formatDate(new Date(value));
+                  return label;
+                }}
               />
               <YAxis
                 tickLine={false}

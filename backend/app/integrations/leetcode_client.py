@@ -1,4 +1,5 @@
 import logging
+import time as _time
 from typing import Any
 
 import httpx
@@ -19,18 +20,25 @@ class LeetCodeUserNotFoundError(LeetCodeApiError):
 class LeetCodeClient(BasePlatformClient):
     """
     LeetCode public GraphQL API client.
-    
+
     Uses LeetCode's public GraphQL endpoint to fetch user profile and
     submission data. Does NOT require authentication for basic public stats.
-    
+
     Limitations:
-    - Only public profile data is accessible
-    - Submission history may be limited to recent submissions
+    - Only public profile data is accessible without session cookies
+    - ``submissionList`` (paginated, all statuses) is attempted first; if it
+      is blocked for a given username the client falls back to
+      ``recentAcSubmissionList`` (≤ 100 accepted-only, no pagination)
     - Contest details may be limited without authentication
     """
-    
+
     BASE_URL = "https://leetcode.com"
     GRAPHQL_URL = "https://leetcode.com/graphql"
+
+    #: Maximum pages fetched by the paginated method.
+    #: 20 submissions × 50 pages = 1 000 submissions max.
+    _PAGINATED_PAGE_SIZE = 20
+    _MAX_PAGES = 50
 
     def __init__(self, timeout: float = 10.0):
         super().__init__(self.BASE_URL)
@@ -42,12 +50,12 @@ class LeetCodeClient(BasePlatformClient):
         variables: dict[str, Any] | None = None,
     ) -> Any:
         """Execute a GraphQL query against LeetCode's public API."""
-        
+
         payload = {
             "query": query,
             "variables": variables or {},
         }
-        
+
         logger.debug(
             "LeetCode GraphQL request: query=%s variables=%r",
             query[:100],
@@ -108,14 +116,14 @@ class LeetCodeClient(BasePlatformClient):
     def fetch_profile(self, username: str) -> dict[str, Any]:
         """
         Fetch public profile data for a LeetCode user.
-        
+
         Returns profile information including:
         - username
         - ranking
         - problems solved by difficulty
         - contest rating (if available)
         """
-        
+
         # First, fetch basic profile and submit stats
         query = """
         query getUserProfile($username: String!) {
@@ -153,9 +161,9 @@ class LeetCodeClient(BasePlatformClient):
             }
         }
         """
-        
+
         variables = {"username": username}
-        
+
         try:
             result = self._graphql_query(query, variables)
         except LeetCodeApiError as exc:
@@ -167,7 +175,7 @@ class LeetCodeClient(BasePlatformClient):
             raise
 
         matched_user = result.get("matchedUser")
-        
+
         if matched_user is None:
             raise LeetCodeUserNotFoundError(
                 f"LeetCode user '{username}' not found."
@@ -193,18 +201,147 @@ class LeetCodeClient(BasePlatformClient):
 
         return matched_user
 
+    # ------------------------------------------------------------------
+    # Submission history — paginated (primary) + recent-AC (fallback)
+    # ------------------------------------------------------------------
+
+    def fetch_submissions_paginated(
+        self,
+        username: str,
+    ) -> list[dict[str, Any]]:
+        """
+        Attempt to retrieve full submission history via the ``submissionList``
+        GraphQL query, which supports ``offset`` / ``limit`` pagination and
+        returns **all** submission statuses (not just Accepted).
+
+        If the endpoint is unavailable or returns an error on the first page,
+        the method falls back to ``_fetch_recent_ac_submissions()`` so the
+        sync never breaks.
+
+        Pagination strategy
+        -------------------
+        *  Fetch pages of ``_PAGINATED_PAGE_SIZE`` submissions starting at
+           offset 0.
+        *  Stop when ``hasNext`` is False, the page is empty, or
+           ``_MAX_PAGES`` pages have been fetched.
+        *  A 0.3 s inter-page delay is applied to avoid rate-limiting.
+
+        Returns a normalised list compatible with the sync service.
+        """
+        query = """
+        query getSubmissions($username: String!, $limit: Int!, $offset: Int!) {
+            submissionList(username: $username, limit: $limit, offset: $offset) {
+                hasNext
+                submissions {
+                    id
+                    title
+                    titleSlug
+                    timestamp
+                    statusDisplay
+                    lang
+                }
+            }
+        }
+        """
+
+        all_raw: list[dict[str, Any]] = []
+        offset = 0
+        pages_fetched = 0
+
+        while pages_fetched < self._MAX_PAGES:
+            variables: dict[str, Any] = {
+                "username": username,
+                "limit": self._PAGINATED_PAGE_SIZE,
+                "offset": offset,
+            }
+
+            try:
+                result = self._graphql_query(query, variables)
+            except LeetCodeApiError as exc:
+                if pages_fetched == 0:
+                    # The endpoint may not be accessible for this username —
+                    # fall back to the public recent-AC endpoint.
+                    logger.warning(
+                        "submissionList paginated fetch failed for %s (page 0): %s. "
+                        "Falling back to recentAcSubmissionList.",
+                        username,
+                        exc,
+                    )
+                    return self._fetch_recent_ac_submissions(username)
+                # Subsequent pages: stop safely with what we have already.
+                logger.warning(
+                    "submissionList paginated fetch error at offset=%d for %s: %s. "
+                    "Stopping pagination early with %d submissions collected.",
+                    offset,
+                    username,
+                    exc,
+                    len(all_raw),
+                )
+                break
+
+            submission_list = result.get("submissionList") or {}
+            page_submissions: list[dict[str, Any]] = submission_list.get("submissions") or []
+            has_next = bool(submission_list.get("hasNext"))
+
+            pages_fetched += 1
+
+            if not page_submissions:
+                logger.info(
+                    "submissionList page %d returned 0 items for %s — stopping.",
+                    pages_fetched,
+                    username,
+                )
+                break
+
+            logger.info(
+                "submissionList page %d: offset=%d fetched=%d hasNext=%s",
+                pages_fetched,
+                offset,
+                len(page_submissions),
+                has_next,
+            )
+
+            all_raw.extend(page_submissions)
+            offset += len(page_submissions)
+
+            if not has_next:
+                break
+
+            # Polite inter-page delay to avoid rate-limiting.
+            _time.sleep(0.3)
+
+        logger.info(
+            "submissionList paginated fetch complete for %s: "
+            "pages=%d total_submissions=%d",
+            username,
+            pages_fetched,
+            len(all_raw),
+        )
+
+        return self._normalise_submission_list(all_raw)
+
     def fetch_submissions(
         self,
         username: str,
         limit: int = 100,
     ) -> list[dict[str, Any]]:
         """
-        Fetch recent accepted submissions for a LeetCode user.
+        Fetch recent *accepted* submissions via ``recentAcSubmissionList``.
 
-        Uses recentAcSubmissionList because the older
-        recentSubmissionList endpoint is currently unreliable.
+        This endpoint is the public fallback — it is bounded (≤ 100 items,
+        accepted-only) and does not support pagination.  Prefer
+        ``fetch_submissions_paginated()`` for complete history.
         """
+        return self._fetch_recent_ac_submissions(username, limit=limit)
 
+    def _fetch_recent_ac_submissions(
+        self,
+        username: str,
+        limit: int = 100,
+    ) -> list[dict[str, Any]]:
+        """
+        Internal: fetch recentAcSubmissionList (accepted-only, bounded ≤ 100).
+        """
         query = """
         query recentAcSubmissions($username: String!, $limit: Int!) {
             recentAcSubmissionList(username: $username, limit: $limit) {
@@ -230,38 +367,50 @@ class LeetCodeClient(BasePlatformClient):
             )
             return []
 
-        submissions = result.get("recentAcSubmissionList")
+        submissions: list[dict[str, Any]] = result.get("recentAcSubmissionList") or []
 
-        if not submissions:
-            return []
+        # recentAcSubmissionList returns accepted submissions only.
+        # Add the statusDisplay field so the normaliser works uniformly.
+        for sub in submissions:
+            sub.setdefault("statusDisplay", "Accepted")
+            sub.setdefault("lang", "Unknown")
 
-        # Normalize the response so the existing sync service
-        # can continue using the same fields.
-        normalized = []
+        return self._normalise_submission_list(submissions)
 
-        for submission in submissions:
-            normalized.append(
+    @staticmethod
+    def _normalise_submission_list(
+        submissions: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        """
+        Convert raw GraphQL submission dicts into the normalised format
+        consumed by :class:`LeetCodeSyncService`.
+
+        Guaranteed output fields per entry:
+            id, title, titleSlug, timestamp, statusDisplay, lang, difficulty
+        """
+        normalised: list[dict[str, Any]] = []
+        for sub in submissions:
+            normalised.append(
                 {
-                    "id": submission.get("id"),
-                    "title": submission.get("title"),
-                    "titleSlug": submission.get("titleSlug"),
-                    "timestamp": submission.get("timestamp"),
-                    "statusDisplay": "Accepted",
-                    "lang": "Unknown",
+                    "id": sub.get("id"),
+                    "title": sub.get("title"),
+                    "titleSlug": sub.get("titleSlug"),
+                    "timestamp": sub.get("timestamp"),
+                    "statusDisplay": sub.get("statusDisplay") or "Accepted",
+                    "lang": sub.get("lang") or "Unknown",
                     "difficulty": None,
                 }
             )
-
-        return normalized
+        return normalised
 
     def fetch_rating_history(self, username: str) -> list[dict[str, Any]]:
         """
         Fetch contest rating history for a LeetCode user.
-        
+
         Note: Only available if user has participated in contests.
         Returns empty list if no contest history.
         """
-        
+
         query = """
         query getUserContestHistory($username: String!) {
             userContestRankingHistory(username: $username) {
@@ -279,9 +428,9 @@ class LeetCodeClient(BasePlatformClient):
             }
         }
         """
-        
+
         variables = {"username": username}
-        
+
         try:
             result = self._graphql_query(query, variables)
         except LeetCodeApiError:
@@ -293,7 +442,7 @@ class LeetCodeClient(BasePlatformClient):
             return []
 
         history = result.get("userContestRankingHistory")
-        
+
         if history is None:
             return []
 
@@ -302,12 +451,12 @@ class LeetCodeClient(BasePlatformClient):
     def fetch_contests(self) -> list[dict[str, Any]]:
         """
         Fetch LeetCode contest list.
-        
+
         Note: LeetCode's public API does not provide a comprehensive
         contest list endpoint. This returns an empty list as contests
         are fetched per-user through rating history.
         """
-        
+
         # LeetCode doesn't provide a public contest list API
         # Contests are retrieved through user-specific contest history
         logger.info("LeetCode contest list not available via public API")
@@ -316,11 +465,11 @@ class LeetCodeClient(BasePlatformClient):
     def fetch_problem_details(self, title_slug: str) -> dict[str, Any] | None:
         """
         Fetch detailed information about a specific LeetCode problem.
-        
+
         Returns problem details including difficulty if available.
         Returns None if the problem cannot be found.
         """
-        
+
         query = """
         query getProblemDetails($titleSlug: String!) {
             question(titleSlug: $titleSlug) {
@@ -332,9 +481,9 @@ class LeetCodeClient(BasePlatformClient):
             }
         }
         """
-        
+
         variables = {"titleSlug": title_slug}
-        
+
         try:
             result = self._graphql_query(query, variables)
             question = result.get("question")
@@ -342,13 +491,13 @@ class LeetCodeClient(BasePlatformClient):
         except LeetCodeApiError:
             logger.warning("Failed to fetch problem details for %s", title_slug)
             return None
-    
+
     # ------------------------------------------------------------------
     # DEPRECATED: Authenticated helpers (no longer used - replaced by public API)
     # ------------------------------------------------------------------
     # These methods are kept for backwards compatibility but are deprecated.
     # The new backfill_leetcode_topics() method uses the public API instead.
-    
+
     def _graphql_query_authenticated(
         self,
         query: str,
@@ -359,14 +508,13 @@ class LeetCodeClient(BasePlatformClient):
     ) -> Any:
         """
         DEPRECATED: Execute a LeetCode GraphQL query with session-cookie authentication.
-        
+
         This method is deprecated. Use the public _graphql_query() method instead.
         """
         logger.warning(
             "Authenticated GraphQL query is deprecated. "
             "Use public API methods instead."
         )
-        import time as _time
 
         payload = {
             "query": query,
@@ -480,7 +628,7 @@ class LeetCodeClient(BasePlatformClient):
     ) -> list[dict[str, Any]]:
         """
         DEPRECATED: Fetch all solved LeetCode problems with topic tags (authenticated).
-        
+
         This method is deprecated. Use backfill_leetcode_topics() in the sync service
         which uses the public API instead.
         """

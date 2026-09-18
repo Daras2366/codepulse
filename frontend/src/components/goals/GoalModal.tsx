@@ -141,7 +141,7 @@ export function GoalModal(props: GoalModalProps) {
 
       if (isEditing) {
         // For edit, don't send goal_type since it's not editable
-        // eslint-disable-next-line @typescript-eslint/no-unused-vars
+
         const { goal_type, ...editData } = baseData;
         await (props as EditProps).onSubmit(editData as GoalUpdate);
       } else {

@@ -103,6 +103,59 @@ class DashboardRepository(BaseRepository):
             .all()
         )
 
+    def get_aggregate_submission_summary(self, profile_ids: list[int]):
+        return (
+            self.db.query(
+                func.count(Submission.id).label("total_submissions"),
+                func.coalesce(
+                    func.sum(
+                        case(
+                            (Submission.status == SubmissionStatus.ACCEPTED, 1),
+                            else_=0,
+                        )
+                    ),
+                    0,
+                ).label("accepted_submissions"),
+            )
+            .filter(Submission.profile_id.in_(profile_ids))
+            .one()
+        )
+
+    def get_aggregate_recent_submissions(self, profile_ids: list[int], limit: int):
+        return (
+            self.db.query(Submission, Problem, Contest)
+            .join(Problem, Submission.problem_id == Problem.id)
+            .outerjoin(Contest, Submission.contest_id == Contest.id)
+            .filter(Submission.profile_id.in_(profile_ids))
+            .order_by(Submission.submitted_at.desc(), Submission.id.desc())
+            .limit(limit)
+            .all()
+        )
+
+    def get_aggregate_submission_activity(self, profile_ids: list[int]):
+        activity_date = func.date(Submission.submitted_at).label("activity_date")
+        accepted = func.coalesce(
+            func.sum(
+                case(
+                    (Submission.status == SubmissionStatus.ACCEPTED, 1),
+                    else_=0,
+                )
+            ),
+            0,
+        ).label("accepted_submissions")
+
+        return (
+            self.db.query(
+                activity_date,
+                func.count(Submission.id).label("total_submissions"),
+                accepted,
+            )
+            .filter(Submission.profile_id.in_(profile_ids))
+            .group_by(activity_date)
+            .order_by(activity_date.asc())
+            .all()
+        )
+
     def get_rating_history(self, profile_id: int):
         return (
             self.db.query(RatingHistory, Contest)
@@ -117,6 +170,15 @@ class DashboardRepository(BaseRepository):
             self.db.query(ContestParticipation, Contest)
             .join(Contest, ContestParticipation.contest_id == Contest.id)
             .filter(ContestParticipation.profile_id == profile_id)
+            .order_by(Contest.start_time.desc(), Contest.id.desc())
+            .all()
+        )
+
+    def get_aggregate_contest_history(self, profile_ids: list[int]):
+        return (
+            self.db.query(ContestParticipation, Contest)
+            .join(Contest, ContestParticipation.contest_id == Contest.id)
+            .filter(ContestParticipation.profile_id.in_(profile_ids))
             .order_by(Contest.start_time.desc(), Contest.id.desc())
             .all()
         )

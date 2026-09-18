@@ -1,5 +1,5 @@
 import type { AnalyticsContestEntry } from "@/api/analytics";
-import type { DashboardContests } from "@/api/dashboard";
+import type { DashboardAggregateContests, DashboardContests } from "@/api/dashboard";
 import { EmptyState, ErrorState, ListSkeleton } from "@/components/ui-kit/motion";
 import { Panel, Pill } from "@/components/ui-kit/Panel";
 import { cn } from "@/lib/utils";
@@ -30,7 +30,11 @@ export function ContestsTable({
   onRetry,
 }: {
   limit?: number;
-  contests?: DashboardContests | { contests: AnalyticsContestEntry[] } | undefined;
+  contests?:
+    | DashboardContests
+    | DashboardAggregateContests
+    | { contests: AnalyticsContestEntry[] }
+    | undefined;
   isLoading?: boolean;
   error?: string | undefined;
   onRetry?: (() => void) | undefined;
@@ -44,7 +48,7 @@ export function ContestsTable({
           : new Intl.DateTimeFormat("en", { dateStyle: "medium" }).format(dateObj);
         return {
           name: contest.contest_name,
-          platform: (contest as any).platform || "Codeforces",
+          platform: contest.platform || "Codeforces",
           date: formattedDate,
           rank: contest.rank,
           delta: contest.rating_change,

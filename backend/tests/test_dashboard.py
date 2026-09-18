@@ -284,6 +284,52 @@ class DashboardApiTests(TestCase):
         self.assertEqual(payload["contests"][0]["rating_change"], 100)
         self.assertEqual(payload["contests"][0]["solved"], 3)
 
+    def test_aggregate_dashboard_combines_only_current_users_profiles(self):
+        leetcode_profile = PlatformProfile(
+            user_id=self.current_user.id,
+            platform=Platform.LEETCODE,
+            username="leetcode-user",
+            problems_solved=10,
+            contests_attended=4,
+            current_rating=1800,
+            max_rating=1850,
+        )
+        leetcode_problem = Problem(
+            platform=Platform.LEETCODE,
+            platform_problem_id="two-sum",
+            title="Two Sum",
+            slug="leetcode-two-sum",
+            problem_url="https://leetcode.com/problems/two-sum/",
+            difficulty=Difficulty.EASY,
+            acceptance_rate=None,
+        )
+        self.session.add_all([leetcode_profile, leetcode_problem])
+        self.session.flush()
+        self.session.add(
+            Submission(
+                profile_id=leetcode_profile.id,
+                problem_id=leetcode_problem.id,
+                contest_id=None,
+                platform_submission_id="lc-1",
+                submitted_at=datetime(2024, 1, 1, tzinfo=timezone.utc),
+                language="Python3",
+                status=SubmissionStatus.ACCEPTED,
+            )
+        )
+        self.session.commit()
+
+        response = self.client.get("/dashboard/aggregate?recent_limit=2")
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["overview"]["connected_platforms"], 2)
+        self.assertEqual(payload["overview"]["total_problems_solved"], 12)
+        self.assertEqual(payload["overview"]["total_submissions"], 4)
+        self.assertEqual(payload["overview"]["contests_attended"], 4)
+        self.assertEqual(payload["submissions"]["summary"]["accepted_submissions"], 3)
+        self.assertEqual(payload["submissions"]["recent_submissions"][0]["platform"], "leetcode")
+        self.assertEqual(len(payload["overview"]["platforms"]), 2)
+
     def test_empty_profile_returns_empty_database_backed_responses(self):
         self.app.dependency_overrides[get_current_user] = lambda: self.empty_user
 

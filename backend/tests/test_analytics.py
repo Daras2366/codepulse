@@ -41,6 +41,7 @@ from app.models.topic import Topic
 from app.models.problem_topic import ProblemTopic
 from app.models.user import User
 from app.routers.analytics import router
+from app.services.performance_analyzer import PerformanceAnalyzer
 
 
 class AnalyticsApiTests(TestCase):
@@ -773,6 +774,253 @@ class AnalyticsApiTests(TestCase):
             self.assertIn("Dynamic Programming", topic_names)
             # Raw "dp" should not appear
             self.assertNotIn("dp", topic_names)
+
+        # ------------------------------------------------------------------
+        # Test 9i: Correct percentage math — sums approximately to 100
+        # ------------------------------------------------------------------
+
+        def test_aggregate_topic_breakdown_percentages_sum_to_100(self):
+            """Slice percentages must sum to approximately 100 % (±1 % for rounding)."""
+            resp = self.client.get(
+                "/analytics/aggregate/topic-breakdown?platforms=codeforces"
+            )
+            self.assertEqual(resp.status_code, 200)
+            data = resp.json()
+
+            total_percentage = sum(t["percentage"] for t in data["topics"])
+            self.assertAlmostEqual(total_percentage, 100.0, delta=1.0)
+
+    # ------------------------------------------------------------------
+    # Performance Analyzer Tests
+    # ------------------------------------------------------------------
+
+    def test_performance_analyzer_user_isolation(self):
+        """Performance analyzer respects user isolation."""
+        # Create another user with data
+        other_user = User(
+            username="other-user",
+            email="other@example.com",
+            password_hash="hash",
+        )
+        self.session.add(other_user)
+        self.session.flush()
+
+        other_profile = PlatformProfile(
+            user_id=other_user.id,
+            platform=Platform.CODEFORCES,
+            username="other",
+            current_rating=1200,
+            max_rating=1300,
+        )
+        self.session.add(other_profile)
+        self.session.commit()
+
+        # Current user's performance should not include other user's data
+        resp = self.client.get("/analytics/performance")
+        self.assertEqual(resp.status_code, 200)
+        data = resp.json()
+        self.assertEqual(data["profile"]["overview"]["total_submissions"], 4)  # Only current user's submissions
+
+    def test_performance_analyzer_multiple_platforms(self):
+        """Performance analyzer handles multiple connected platforms."""
+        # Add a LeetCode profile with data
+        lc_profile = PlatformProfile(
+            user_id=self.current_user.id,
+            platform=Platform.LEETCODE,
+            username="leetcode_user",
+            current_rating=1600,
+            max_rating=1700,
+            problems_solved=100,
+            solved_easy=40,
+            solved_medium=50,
+            solved_hard=10,
+        )
+        self.session.add(lc_profile)
+        self.session.flush()
+
+        # Add LeetCode topic stats
+        lc_topic_stat = PlatformTopicStat(
+            profile_id=lc_profile.id,
+            topic_name="Array",
+            topic_slug="array",
+            solved_count=25,
+        )
+        self.session.add(lc_topic_stat)
+        self.session.commit()
+
+        resp = self.client.get("/analytics/performance")
+        self.assertEqual(resp.status_code, 200)
+        data = resp.json()
+
+        # Should include data from both platforms
+        self.assertGreater(data["profile"]["overview"]["total_submissions"], 0)
+        self.assertEqual(len(data["profile"]["data_quality"]["platform_coverage"]), 2)
+
+    def test_performance_analyzer_single_platform(self):
+        """Performance analyzer works with single platform."""
+        resp = self.client.get("/analytics/performance")
+        self.assertEqual(resp.status_code, 200)
+        data = resp.json()
+
+        # Should work fine with just Codeforces
+        self.assertEqual(len(data["profile"]["data_quality"]["platform_coverage"]), 1)
+        self.assertIn("codeforces", data["profile"]["data_quality"]["platform_coverage"])
+
+    def test_performance_analyzer_no_data(self):
+        """Performance analyzer handles user with no data gracefully."""
+        # Create user with no profiles
+        empty_user = User(
+            username="empty-user",
+            email="empty@example.com",
+            password_hash="hash",
+        )
+        self.session.add(empty_user)
+        self.session.flush()
+
+        # Create a test app for the empty user
+        empty_app = FastAPI()
+        empty_app.include_router(router)
+
+        def override_db():
+            yield self.session
+
+        def override_user():
+            return empty_user
+
+        empty_app.dependency_overrides[get_db] = override_db
+        empty_app.dependency_overrides[get_current_user] = override_user
+
+        empty_client = TestClient(empty_app)
+
+        resp = empty_client.get("/analytics/performance")
+        self.assertEqual(resp.status_code, 200)
+        data = resp.json()
+
+        # Should return empty profile
+        self.assertEqual(data["profile"]["overview"]["total_submissions"], 0)
+        self.assertEqual(data["profile"]["overview"]["solved_problems"], 0)
+        self.assertEqual(len(data["profile"]["topic_performance"]), 0)
+        self.assertEqual(len(data["profile"]["strengths"]), 0)
+        self.assertEqual(len(data["profile"]["weaknesses"]), 0)
+
+        empty_client.close()
+
+    def test_performance_analyzer_topic_strengths_weaknesses(self):
+        """Performance analyzer correctly identifies topic strengths and weaknesses."""
+        resp = self.client.get("/analytics/performance")
+        self.assertEqual(resp.status_code, 200)
+        data = resp.json()
+
+        # Should have topic performance data
+        self.assertGreater(len(data["profile"]["topic_performance"]), 0)
+
+        # Check that strength classification is applied
+        topic_strengths = [t for t in data["profile"]["topic_performance"]]
+        self.assertTrue(all(t["strength_level"] in ["strong", "moderate", "weak", "insufficient_data"] for t in topic_strengths))
+
+        # Check that strengths and weaknesses are generated
+        strengths = data["profile"]["strengths"]
+        weaknesses = data["profile"]["weaknesses"]
+
+        # Should have at least some classifications
+        total_classifications = len(strengths) + len(weaknesses)
+        self.assertGreater(total_classifications, 0)
+
+    def test_performance_analyzer_difficulty_distribution(self):
+        """Performance analyzer correctly analyzes difficulty distribution."""
+        resp = self.client.get("/analytics/performance")
+        self.assertEqual(resp.status_code, 200)
+        data = resp.json()
+
+        # Should have difficulty performance data
+        difficulty_performance = data["profile"]["difficulty_performance"]
+
+        # For Codeforces, should have difficulty data from submissions
+        if difficulty_performance:
+            # Check coverage status classification
+            coverage_statuses = [d["coverage_status"] for d in difficulty_performance]
+            self.assertTrue(all(status in ["well_covered", "moderately_covered", "rarely_attempted", "not_attempted"] for status in coverage_statuses))
+
+    def test_performance_analyzer_submission_metrics(self):
+        """Performance analyzer correctly calculates submission behavior metrics."""
+        resp = self.client.get("/analytics/performance")
+        self.assertEqual(resp.status_code, 200)
+        data = resp.json()
+
+        submission_behavior = data["profile"]["submission_behavior"]
+
+        # Should have submission metrics
+        self.assertEqual(submission_behavior["total_submissions"], 4)
+        self.assertEqual(submission_behavior["accepted_submissions"], 2)
+        self.assertIsNotNone(submission_behavior["acceptance_rate"])
+        self.assertEqual(submission_behavior["acceptance_rate"], 0.5)
+
+        # Should calculate active days
+        self.assertGreater(submission_behavior["active_days"], 0)
+
+    def test_performance_analyzer_contest_rating_analysis(self):
+        """Performance analyzer correctly analyzes contest and rating performance."""
+        resp = self.client.get("/analytics/performance")
+        self.assertEqual(resp.status_code, 200)
+        data = resp.json()
+
+        contest_performance = data["profile"]["contest_performance"]
+        rating_trend = data["profile"]["rating_trend"]
+
+        # Should have contest data
+        self.assertEqual(contest_performance["contests_participated"], 2)
+
+        # Should have rating trend data
+        self.assertEqual(rating_trend["current_rating"], 1500)
+        self.assertEqual(rating_trend["max_rating"], 1600)
+
+        # Check trend direction classification
+        self.assertIn(rating_trend["trend_direction"], ["improving", "stable", "declining", "insufficient_data"])
+
+    def test_performance_analyzer_insufficient_topic_data(self):
+        """Performance analyzer handles insufficient topic data gracefully."""
+        # Remove topic data
+        self.session.query(ProblemTopic).delete()
+        self.session.query(Topic).delete()
+        self.session.commit()
+
+        resp = self.client.get("/analytics/performance")
+        self.assertEqual(resp.status_code, 200)
+        data = resp.json()
+
+        # Should indicate insufficient data in data quality
+        self.assertFalse(data["profile"]["data_quality"]["has_complete_topic_data"])
+
+        # Topic performance should be empty or indicate insufficient data
+        if data["profile"]["topic_performance"]:
+            for topic in data["profile"]["topic_performance"]:
+                self.assertEqual(topic["strength_level"], "insufficient_data")
+
+    def test_performance_analyzer_zero_submissions(self):
+        """Performance analyzer handles edge case of zero submissions."""
+        # Create profile with no submissions
+        no_sub_profile = PlatformProfile(
+            user_id=self.current_user.id,
+            platform=Platform.CODEFORCES,
+            username="nosub",
+            current_rating=None,
+            max_rating=None,
+        )
+        self.session.add(no_sub_profile)
+        self.session.commit()
+
+        # Remove existing submissions
+        self.session.query(Submission).delete()
+        self.session.commit()
+
+        resp = self.client.get("/analytics/performance")
+        self.assertEqual(resp.status_code, 200)
+        data = resp.json()
+
+        # Should handle zero submissions gracefully
+        self.assertEqual(data["profile"]["overview"]["total_submissions"], 0)
+        self.assertEqual(data["profile"]["submission_behavior"]["acceptance_rate"], None)
+        self.assertEqual(data["profile"]["submission_behavior"]["average_submissions_per_active_day"], 0.0)
 
         # ------------------------------------------------------------------
         # Test 9i: Correct percentage math — sums approximately to 100

@@ -21,12 +21,14 @@ from app.schemas.analytics import (
     AnalyticsRatingProgressionResponse,
     AnalyticsSubmissionActivityResponse,
     AnalyticsSummaryResponse,
+    PerformanceProfileResponse,
 )
 from app.services.analytics_service import (
     AnalyticsProfileAccessDeniedError,
     AnalyticsProfileNotFoundError,
     AnalyticsService,
 )
+from app.services.performance_analyzer import PerformanceAnalyzer
 
 router = APIRouter(prefix="/analytics", tags=["Analytics"])
 
@@ -90,6 +92,29 @@ def get_aggregate_submission_activity(
     """Return submission activity for selected platforms, optionally filtered by time range."""
     platform_list = platforms.split(",") if platforms else None
     return _get_service(db).get_aggregate_submission_activity(current_user.id, platform_list, range_days)
+
+
+@router.get("/performance", response_model=PerformanceProfileResponse)
+def get_performance_profile(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Return comprehensive performance analysis for the authenticated user.
+
+    Analyzes the user's data across multiple dimensions including:
+    - Topic performance
+    - Difficulty performance
+    - Submission behavior
+    - Contest performance
+    - Rating trends
+    - Strengths and weaknesses
+    - Data quality assessment
+
+    All metrics are calculated deterministically from stored data without LLM involvement.
+    """
+    analyzer = PerformanceAnalyzer(db)
+    profile = analyzer.analyze_user_performance(current_user.id)
+    return PerformanceProfileResponse(profile=profile)
 
 
 # ------------------------------------------------------------------

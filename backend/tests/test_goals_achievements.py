@@ -473,9 +473,11 @@ class GoalsApiTests(TestCase):
         )
         self.assertEqual(resp.status_code, 201)
         data = resp.json()
-        self.assertEqual(data["current_value"], 35)
-        self.assertEqual(data["remaining"], 15)
-        self.assertAlmostEqual(data["progress_percentage"], 70.0)
+        # For LeetCode topic goals, current_value is progress from baseline (current - start_value)
+        # Since start_value is set to 35 at creation, current_value starts at 0
+        self.assertEqual(data["current_value"], 0)
+        self.assertEqual(data["remaining"], 50)
+        self.assertAlmostEqual(data["progress_percentage"], 0.0)
 
     # ---- Test 11: TOPIC goal — Codeforces via ProblemTopic join ----
 

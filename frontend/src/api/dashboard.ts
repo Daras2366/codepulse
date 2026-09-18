@@ -69,6 +69,7 @@ export interface DashboardRecentSubmission {
   difficulty: Difficulty;
   contest_id: number | null;
   contest_name: string | null;
+  platform: Platform;
 }
 
 export interface DashboardSubmissionActivity {
@@ -105,6 +106,44 @@ export interface DashboardContests {
   contests: DashboardContest[];
 }
 
+export interface DashboardPlatformSummary {
+  profile_id: number;
+  platform: Platform;
+  username: string;
+  total_problems_solved: number;
+  total_submissions: number;
+  contests_attended: number;
+  current_rating: number | null;
+  max_rating: number | null;
+  rank: string | null;
+  last_synced_at: string | null;
+}
+
+export interface DashboardAggregateOverview {
+  total_problems_solved: number;
+  total_submissions: number;
+  contests_attended: number;
+  connected_platforms: number;
+  platforms: DashboardPlatformSummary[];
+}
+
+export interface DashboardAggregateSubmissions {
+  summary: DashboardSubmissionSummary;
+  recent_submissions: DashboardRecentSubmission[];
+  activity: DashboardSubmissionActivity[];
+}
+
+export interface DashboardAggregateContests {
+  contests_attended: number;
+  contests: DashboardContest[];
+}
+
+export interface DashboardAggregate {
+  overview: DashboardAggregateOverview;
+  submissions: DashboardAggregateSubmissions;
+  contests: DashboardAggregateContests;
+}
+
 export function getDashboardOverview(profileId: number) {
   return apiRequest<DashboardOverview>(`/dashboard/${profileId}/overview`);
 }
@@ -125,6 +164,10 @@ export function getDashboardSubmissions(profileId: number, recentLimit = 20) {
 
 export function getDashboardContests(profileId: number) {
   return apiRequest<DashboardContests>(`/dashboard/${profileId}/contests`);
+}
+
+export function getAggregateDashboard(recentLimit = 20) {
+  return apiRequest<DashboardAggregate>(`/dashboard/aggregate?recent_limit=${recentLimit}`);
 }
 
 export interface SyncResult {
