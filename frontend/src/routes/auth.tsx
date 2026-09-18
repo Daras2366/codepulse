@@ -1,13 +1,21 @@
-import { createFileRoute, useNavigate } from "@tanstack/react-router";
+import { createFileRoute, redirect, useNavigate, useRouter } from "@tanstack/react-router";
 import { useState } from "react";
-import { useMutation } from "@tanstack/react-query";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
 
 import { login, register, type LoginRequest, type RegisterRequest, AuthError } from "@/api/auth";
+import { hasAccessToken } from "@/api/client";
+import { userQueryKeys } from "@/hooks/useUser";
 
 const title = "Sign in — CodePulse";
 const description = "Sign in to your CodePulse account";
 
 export const Route = createFileRoute("/auth")({
+  beforeLoad: () => {
+    // Already authenticated — send to dashboard
+    if (hasAccessToken()) {
+      throw redirect({ to: "/" });
+    }
+  },
   head: () => ({
     meta: [
       { title },
@@ -22,25 +30,28 @@ export const Route = createFileRoute("/auth")({
 function AuthPage() {
   const [isLogin, setIsLogin] = useState(true);
   const navigate = useNavigate();
+  const router = useRouter();
+  const queryClient = useQueryClient();
 
   const loginMutation = useMutation({
     mutationFn: (data: LoginRequest) => login(data),
-    onSuccess: () => {
-      // Navigate to dashboard after successful login
+    onSuccess: async () => {
+      // Invalidate so useUser re-fetches the current user immediately
+      await queryClient.invalidateQueries({ queryKey: userQueryKeys.me });
+      // Invalidate the router so beforeLoad guards re-evaluate with fresh auth state
+      await router.invalidate();
       void navigate({ to: "/" });
     },
   });
 
   const registerMutation = useMutation({
     mutationFn: (data: RegisterRequest) => register(data),
-    onSuccess: async (user) => {
-      // After registration, automatically log in
-      const formData = document.getElementById("auth-form") as HTMLFormElement;
-      const email = (formData.elements.namedItem("email") as HTMLInputElement).value;
-      const password = (formData.elements.namedItem("password") as HTMLInputElement).value;
-
+    onSuccess: async (_user, variables) => {
+      // After registration, automatically log in with the same credentials
       try {
-        await login({ email, password });
+        await login({ email: variables.email, password: variables.password });
+        await queryClient.invalidateQueries({ queryKey: userQueryKeys.me });
+        await router.invalidate();
         void navigate({ to: "/" });
       } catch (error) {
         console.error("Auto-login after registration failed:", error);

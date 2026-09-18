@@ -1,4 +1,6 @@
-import { createFileRoute } from "@tanstack/react-router";
+import { createFileRoute, redirect } from "@tanstack/react-router";
+
+import { hasAccessToken } from "@/api/client";
 
 import { AppShell } from "@/components/layout/AppShell";
 import { PlatformConnections } from "@/components/platforms/PlatformConnections";
@@ -8,6 +10,11 @@ const description =
   "Connected handles for LeetCode, Codeforces, CodeChef and AtCoder with rating, peak rating, problems solved and global rank.";
 
 export const Route = createFileRoute("/platforms")({
+  beforeLoad: () => {
+    if (!hasAccessToken()) {
+      throw redirect({ to: "/auth" });
+    }
+  },
   head: () => ({
     meta: [
       { title },

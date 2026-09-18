@@ -19,6 +19,7 @@ from app.models.enums import Difficulty, Platform, SubmissionStatus
 from app.models.problem import Problem
 from app.models.problem_topic import ProblemTopic
 from app.models.submission import Submission
+from app.models.contest import Contest
 from app.models.contest_participation import ContestParticipation
 from app.models.rating_history import RatingHistory
 from app.models.platform_profile import PlatformProfile
@@ -37,6 +38,7 @@ from app.schemas.analytics import (
     StrengthItem,
     WeaknessItem,
     DataQuality,
+    PlatformRating,
 )
 
 
@@ -98,6 +100,7 @@ class PerformanceAnalyzer:
                 active_days=0,
                 current_rating=None,
                 max_rating=None,
+                ratings_by_platform=[],
             ),
             topic_performance=[],
             difficulty_performance=[],
@@ -117,6 +120,7 @@ class PerformanceAnalyzer:
                 average_rating_change=None,
                 recent_participation=0,
                 participation_trend="insufficient_data",
+                ratings_by_platform=[],
             ),
             rating_trend=RatingTrend(
                 current_rating=None,
@@ -125,13 +129,14 @@ class PerformanceAnalyzer:
                 rating_change_90_days=None,
                 trend_direction="insufficient_data",
                 volatility_score=None,
+                ratings_by_platform=[],
             ),
             strengths=[],
             weaknesses=[],
             data_quality=DataQuality(
-                has_complete_topic_data=False,
-                has_complete_submission_history=False,
-                has_complete_contest_history=False,
+                has_topic_data=False,
+                has_submission_data=False,
+                has_contest_data=False,
                 profile_reported_solved=0,
                 locally_tagged_solved=0,
                 historical_coverage_days=0,
@@ -174,15 +179,29 @@ class PerformanceAnalyzer:
             .scalar() or 0
         )
 
-        # Calculate active days
-        active_days = (
-            self._db.query(func.count(func.date(Submission.submitted_at)))
+        # Calculate active days: distinct calendar dates with at least one submission.
+        # We use a subquery to collect distinct dates first, then count the rows —
+        # the naive func.count(func.date(...)).distinct() pattern does not compose
+        # reliably across all SQLAlchemy/SQLite combinations.
+        date_subq = (
+            self._db.query(func.date(Submission.submitted_at).label("sub_date"))
             .filter(Submission.profile_id.in_(profile_ids))
             .distinct()
-            .scalar() or 0
+            .subquery()
         )
+        active_days = self._db.query(func.count()).select_from(date_subq).scalar() or 0
 
-        # Get current and max ratings
+        # Per-platform ratings — each platform has its own scale.
+        ratings_by_platform: list[PlatformRating] = [
+            PlatformRating(
+                platform=p.platform.value,
+                current_rating=p.current_rating,
+                max_rating=p.max_rating,
+            )
+            for p in profiles
+        ]
+
+        # Global max is retained for backward-compatibility but is labelled clearly.
         current_rating = None
         max_rating = None
         for profile in profiles:
@@ -201,51 +220,41 @@ class PerformanceAnalyzer:
             active_days=active_days,
             current_rating=current_rating,
             max_rating=max_rating,
+            ratings_by_platform=ratings_by_platform,
         )
 
     def _calculate_topic_performance(self, profiles: list[PlatformProfile]) -> list[TopicPerformance]:
-        """Calculate topic-specific performance metrics."""
-        profile_ids = [p.id for p in profiles]
+        """Calculate topic-specific performance metrics.
+
+        Strategy: collect topic data from every connected platform.
+        - LeetCode: use PlatformTopicStat (aggregated per-topic solved counts).
+        - Non-LeetCode: use ProblemTopic → Submission joins.
+        Results from both sources are merged by topic name.  Double-counting
+        is avoided because the two data sources cover disjoint platforms.
+        """
         thirty_days_ago = datetime.now(timezone.utc) - timedelta(days=30)
 
-        # Get all platforms to determine data source
-        has_leetcode = any(p.platform == Platform.LEETCODE for p in profiles)
+        leetcode_profiles = [p for p in profiles if p.platform == Platform.LEETCODE]
         non_leetcode_profiles = [p for p in profiles if p.platform != Platform.LEETCODE]
 
-        topic_performance: list[TopicPerformance] = []
-
-        if has_leetcode and not non_leetcode_profiles:
-            # LeetCode-only: use PlatformTopicStat
-            leetcode_profile_ids = [p.id for p in profiles if p.platform == Platform.LEETCODE]
+        # --- LeetCode topic data via PlatformTopicStat ---
+        lc_topic_map: dict[str, int] = {}  # topic_name → solved_count
+        if leetcode_profiles:
+            lc_profile_ids = [p.id for p in leetcode_profiles]
             topic_stats = self._db.query(
                 PlatformTopicStat.topic_name,
                 PlatformTopicStat.solved_count,
             ).filter(
-                PlatformTopicStat.profile_id.in_(leetcode_profile_ids)
+                PlatformTopicStat.profile_id.in_(lc_profile_ids)
             ).all()
-
-            total_solved = sum(p.problems_solved or 0 for p in profiles)
-
             for topic_name, solved_count in topic_stats:
-                percentage = (solved_count / total_solved * 100) if total_solved > 0 else 0.0
-                strength_level = self._classify_topic_strength(solved_count, total_solved)
-                recent_activity = 0  # PlatformTopicStat doesn't have time data
+                lc_topic_map[topic_name] = lc_topic_map.get(topic_name, 0) + solved_count
 
-                topic_performance.append(
-                    TopicPerformance(
-                        topic=topic_name,
-                        solved_count=solved_count,
-                        percentage=round(percentage, 1),
-                        strength_level=strength_level,
-                        recent_activity=recent_activity,
-                    )
-                )
-
-        elif non_leetcode_profiles:
-            # Mixed or non-LeetCode: use ProblemTopic
-            non_leetcode_ids = [p.id for p in non_leetcode_profiles]
-
-            # Get topic performance from submissions
+        # --- Non-LeetCode topic data via ProblemTopic joins ---
+        other_topic_map: dict[str, int] = {}  # topic_name → solved_count
+        other_recent_map: dict[str, int] = {}  # topic_name → recent solved count
+        if non_leetcode_profiles:
+            non_lc_ids = [p.id for p in non_leetcode_profiles]
             topic_results = (
                 self._db.query(
                     Topic.name.label("topic"),
@@ -255,49 +264,58 @@ class PerformanceAnalyzer:
                 .join(Problem, Problem.id == ProblemTopic.problem_id)
                 .join(Submission, Submission.problem_id == Problem.id)
                 .filter(
-                    Submission.profile_id.in_(non_leetcode_ids),
+                    Submission.profile_id.in_(non_lc_ids),
                     Submission.status == SubmissionStatus.ACCEPTED,
                 )
                 .group_by(Topic.name)
                 .all()
             )
-
-            total_solved = (
-                self._db.query(func.count(distinct(Submission.problem_id)))
-                .filter(
-                    Submission.profile_id.in_(non_leetcode_ids),
-                    Submission.status == SubmissionStatus.ACCEPTED,
-                )
-                .scalar() or 0
-            )
-
             for topic_name, solved_count in topic_results:
-                percentage = (solved_count / total_solved * 100) if total_solved > 0 else 0.0
-                strength_level = self._classify_topic_strength(solved_count, total_solved)
+                other_topic_map[topic_name] = solved_count
 
-                # Calculate recent activity for this topic
-                recent_solved = (
-                    self._db.query(func.count(distinct(Submission.problem_id)))
-                    .join(ProblemTopic, ProblemTopic.problem_id == Submission.problem_id)
-                    .join(Topic, Topic.id == ProblemTopic.topic_id)
-                    .filter(
-                        Submission.profile_id.in_(non_leetcode_ids),
-                        Submission.status == SubmissionStatus.ACCEPTED,
-                        Topic.name == topic_name,
-                        Submission.submitted_at >= thirty_days_ago,
-                    )
-                    .scalar() or 0
+            # Recent activity for non-LC topics
+            recent_results = (
+                self._db.query(
+                    Topic.name.label("topic"),
+                    func.count(distinct(Submission.problem_id)).label("recent"),
                 )
+                .join(ProblemTopic, ProblemTopic.problem_id == Submission.problem_id)
+                .join(Topic, Topic.id == ProblemTopic.topic_id)
+                .filter(
+                    Submission.profile_id.in_(non_lc_ids),
+                    Submission.status == SubmissionStatus.ACCEPTED,
+                    Submission.submitted_at >= thirty_days_ago,
+                )
+                .group_by(Topic.name)
+                .all()
+            )
+            for topic_name, recent in recent_results:
+                other_recent_map[topic_name] = recent
 
-                topic_performance.append(
-                    TopicPerformance(
-                        topic=topic_name,
-                        solved_count=solved_count,
-                        percentage=round(percentage, 1),
-                        strength_level=strength_level,
-                        recent_activity=recent_solved,
-                    )
+        # --- Merge: combine counts from both sources (disjoint platforms) ---
+        # Total solved (across all platforms) is used for strength classification.
+        all_topic_names = set(lc_topic_map) | set(other_topic_map)
+        total_solved_all = sum(lc_topic_map.values()) + sum(other_topic_map.values())
+
+        topic_performance: list[TopicPerformance] = []
+        for topic_name in all_topic_names:
+            lc_count = lc_topic_map.get(topic_name, 0)
+            other_count = other_topic_map.get(topic_name, 0)
+            combined_count = lc_count + other_count
+
+            percentage = (combined_count / total_solved_all * 100) if total_solved_all > 0 else 0.0
+            strength_level = self._classify_topic_strength(combined_count, total_solved_all)
+            recent_activity = other_recent_map.get(topic_name, 0)  # LC has no time data
+
+            topic_performance.append(
+                TopicPerformance(
+                    topic=topic_name,
+                    solved_count=combined_count,
+                    percentage=round(percentage, 1),
+                    strength_level=strength_level,
+                    recent_activity=recent_activity,
                 )
+            )
 
         # Sort by solved count descending
         topic_performance.sort(key=lambda x: x.solved_count, reverse=True)
@@ -316,45 +334,70 @@ class PerformanceAnalyzer:
         return "insufficient_data"
 
     def _calculate_difficulty_performance(self, profiles: list[PlatformProfile]) -> list[DifficultyPerformance]:
-        """Calculate difficulty-specific performance metrics."""
-        profile_ids = [p.id for p in profiles]
+        """Calculate difficulty-specific performance metrics.
+
+        Strategy: collect difficulty data from every connected platform.
+        - LeetCode: profile-level solved_easy/medium/hard counts.  Attempt
+          counts are not available — ``attempt_count`` is set to ``None``.
+        - Non-LeetCode: derived from per-submission Problem.difficulty data.
+
+        When both LeetCode and non-LeetCode profiles are connected, entries
+        are returned per-platform (``platform`` field is set) rather than
+        merged — the two data sources are not on the same scale and cannot
+        be meaningfully combined into aggregate difficulty rates.
+        """
         thirty_days_ago = datetime.now(timezone.utc) - timedelta(days=30)
 
         difficulty_performance: list[DifficultyPerformance] = []
 
-        # Check if we have LeetCode profiles
-        has_leetcode = any(p.platform == Platform.LEETCODE for p in profiles)
+        leetcode_profiles = [p for p in profiles if p.platform == Platform.LEETCODE]
         non_leetcode_profiles = [p for p in profiles if p.platform != Platform.LEETCODE]
 
-        if has_leetcode and not non_leetcode_profiles:
-            # LeetCode-only: use profile-level difficulty counts
-            total_easy = sum(p.solved_easy or 0 for p in profiles)
-            total_medium = sum(p.solved_medium or 0 for p in profiles)
-            total_hard = sum(p.solved_hard or 0 for p in profiles)
+        is_mixed = bool(leetcode_profiles and non_leetcode_profiles)
 
+        # --- LeetCode: profile-level difficulty counts ---
+        if leetcode_profiles:
+            total_easy = sum(p.solved_easy or 0 for p in leetcode_profiles)
+            total_medium = sum(p.solved_medium or 0 for p in leetcode_profiles)
+            total_hard = sum(p.solved_hard or 0 for p in leetcode_profiles)
             total_solved = total_easy + total_medium + total_hard
 
             if total_solved > 0:
-                for difficulty, count in [("Easy", total_easy), ("Medium", total_medium), ("Hard", total_hard)]:
+                for difficulty_label, count in [
+                    ("Easy", total_easy),
+                    ("Medium", total_medium),
+                    ("Hard", total_hard),
+                ]:
                     if count > 0:
                         percentage = count / total_solved
                         coverage_status = self._classify_difficulty_coverage(percentage, count)
-                        recent_activity = 0  # No time data from profile stats
-
                         difficulty_performance.append(
                             DifficultyPerformance(
-                                difficulty=difficulty,
+                                difficulty=difficulty_label,
                                 solved_count=count,
-                                attempt_count=count,  # Approximate for LeetCode
-                                acceptance_rate=None,  # Not available from profile stats
-                                recent_activity=recent_activity,
+                                attempt_count=None,  # not available from profile-level stats
+                                acceptance_rate=None,  # not available from profile-level stats
+                                recent_activity=0,  # no time data from profile stats
                                 coverage_status=coverage_status,
+                                platform="leetcode" if is_mixed else None,
                             )
                         )
 
-        elif non_leetcode_profiles:
-            # Mixed or non-LeetCode: use Problem difficulty from submissions
-            non_leetcode_ids = [p.id for p in non_leetcode_profiles]
+        # --- Non-LeetCode: per-submission difficulty data ---
+        if non_leetcode_profiles:
+            non_lc_ids = [p.id for p in non_leetcode_profiles]
+
+            # Derive a platform label for these entries.
+            # When there is exactly one non-LC platform, use its name.
+            # When multiple non-LC platforms are aggregated together, use a
+            # '+'-joined sorted label (e.g. "codeforces+codechef") so that
+            # consumers know the data spans multiple platforms and can interpret
+            # acceptance rates / attempt counts accordingly.
+            non_lc_platform_names = sorted({p.platform.value for p in non_leetcode_profiles})
+            if len(non_lc_platform_names) == 1:
+                non_lc_platform_label: str | None = non_lc_platform_names[0] if is_mixed else None
+            else:
+                non_lc_platform_label = "+".join(non_lc_platform_names)  # always set; multi-platform label
 
             difficulty_results = (
                 self._db.query(
@@ -364,15 +407,16 @@ class PerformanceAnalyzer:
                 )
                 .join(Submission, Submission.problem_id == Problem.id)
                 .filter(
-                    Submission.profile_id.in_(non_leetcode_ids),
+                    Submission.profile_id.in_(non_lc_ids),
                 )
                 .group_by(Problem.difficulty)
                 .all()
             )
 
+            total_solved_other = sum(r.solved_count for r in difficulty_results)
             for difficulty, solved_count, attempt_count in difficulty_results:
                 acceptance_rate = (solved_count / attempt_count) if attempt_count > 0 else None
-                percentage = solved_count / (sum(r.solved_count for r in difficulty_results) or 1)
+                percentage = solved_count / (total_solved_other or 1)
                 coverage_status = self._classify_difficulty_coverage(percentage, solved_count)
 
                 # Calculate recent activity for this difficulty
@@ -380,7 +424,7 @@ class PerformanceAnalyzer:
                     self._db.query(func.count(distinct(Submission.problem_id)))
                     .join(Problem, Problem.id == Submission.problem_id)
                     .filter(
-                        Submission.profile_id.in_(non_leetcode_ids),
+                        Submission.profile_id.in_(non_lc_ids),
                         Submission.status == SubmissionStatus.ACCEPTED,
                         Problem.difficulty == difficulty,
                         Submission.submitted_at >= thirty_days_ago,
@@ -396,10 +440,12 @@ class PerformanceAnalyzer:
                         acceptance_rate=round(acceptance_rate, 4) if acceptance_rate else None,
                         recent_activity=recent_solved,
                         coverage_status=coverage_status,
+                        platform=non_lc_platform_label,
                     )
                 )
 
         return difficulty_performance
+
 
     def _classify_difficulty_coverage(self, percentage: float, count: int) -> Literal["well_covered", "moderately_covered", "rarely_attempted", "not_attempted"]:
         """Classify difficulty coverage based on percentage and count."""
@@ -434,13 +480,15 @@ class PerformanceAnalyzer:
 
         acceptance_rate = (accepted_submissions / total_submissions) if total_submissions > 0 else None
 
-        # Calculate active days and averages
-        active_days = (
-            self._db.query(func.count(func.date(Submission.submitted_at)))
+        # Calculate active days: distinct calendar dates with at least one submission.
+        # Subquery approach avoids SQLAlchemy/SQLite ordering issues with func.count().distinct().
+        date_subq = (
+            self._db.query(func.date(Submission.submitted_at).label("sub_date"))
             .filter(Submission.profile_id.in_(profile_ids))
             .distinct()
-            .scalar() or 0
+            .subquery()
         )
+        active_days = self._db.query(func.count()).select_from(date_subq).scalar() or 0
 
         average_submissions_per_day = (total_submissions / active_days) if active_days > 0 else 0.0
 
@@ -468,8 +516,19 @@ class PerformanceAnalyzer:
             repeated_attempts_count=repeated_attempts,
         )
 
+    def _calculate_submission_behavior_active_days(self, profile_ids: list[int]) -> int:
+        """Count distinct calendar dates on which at least one submission was made."""
+        date_subq = (
+            self._db.query(func.date(Submission.submitted_at).label("sub_date"))
+            .filter(Submission.profile_id.in_(profile_ids))
+            .distinct()
+            .subquery()
+        )
+        return self._db.query(func.count()).select_from(date_subq).scalar() or 0
+
     def _calculate_streaks(self, profile_ids: list[int]) -> tuple[int, int]:
         """Calculate longest and current submission streaks."""
+        from datetime import date as date_type
         # Get all submission dates
         submission_dates = (
             self._db.query(func.date(Submission.submitted_at).label("date"))
@@ -482,14 +541,20 @@ class PerformanceAnalyzer:
         if not submission_dates:
             return 0, 0
 
-        dates = [row.date for row in submission_dates]
+        # SQLite returns func.date() as a string ('YYYY-MM-DD'); parse to date objects.
+        def _to_date(val) -> date_type:
+            if isinstance(val, date_type):
+                return val
+            return date_type.fromisoformat(str(val))
+
+        dates = [_to_date(row.date) for row in submission_dates]
         longest_streak = 0
         current_streak = 0
 
         # Calculate current streak (consecutive days ending today)
         today = datetime.now(timezone.utc).date()
-        for i, date in enumerate(dates):
-            if date == today - timedelta(days=i):
+        for i, d in enumerate(dates):
+            if d == today - timedelta(days=i):
                 current_streak += 1
             else:
                 break
@@ -519,7 +584,17 @@ class PerformanceAnalyzer:
             .scalar() or 0
         )
 
-        # Get rating info from profiles
+        # Per-platform ratings (scales are not interchangeable).
+        ratings_by_platform: list[PlatformRating] = [
+            PlatformRating(
+                platform=p.platform.value,
+                current_rating=p.current_rating,
+                max_rating=p.max_rating,
+            )
+            for p in profiles
+        ]
+
+        # Global max — retained for backward-compatibility, labelled clearly.
         current_rating = None
         max_rating = None
         for profile in profiles:
@@ -566,6 +641,7 @@ class PerformanceAnalyzer:
             average_rating_change=round(average_rating_change, 2) if average_rating_change else None,
             recent_participation=recent_participation,
             participation_trend=participation_trend,
+            ratings_by_platform=ratings_by_platform,
         )
 
     def _classify_participation_trend(self, recent: int, total: int) -> Literal["increasing", "stable", "decreasing", "insufficient_data"]:
@@ -582,7 +658,17 @@ class PerformanceAnalyzer:
         """Calculate rating progression analysis."""
         profile_ids = [p.id for p in profiles]
 
-        # Get current and max ratings from profiles
+        # Per-platform ratings (not comparable across platforms).
+        ratings_by_platform: list[PlatformRating] = [
+            PlatformRating(
+                platform=p.platform.value,
+                current_rating=p.current_rating,
+                max_rating=p.max_rating,
+            )
+            for p in profiles
+        ]
+
+        # Global max — retained for backward-compatibility.
         current_rating = None
         max_rating = None
         for profile in profiles:
@@ -613,17 +699,20 @@ class PerformanceAnalyzer:
             rating_change_90_days=rating_change_90_days,
             trend_direction=trend_direction,
             volatility_score=round(volatility_score, 2) if volatility_score else None,
+            ratings_by_platform=ratings_by_platform,
         )
 
     def _calculate_rating_change(self, profile_ids: list[int], since: datetime) -> int | None:
-        """Calculate rating change since a given date."""
-        # Get oldest rating before the date and newest rating after
+        """Calculate rating change since a given date.
+
+        RatingHistory links directly to profile_id and contest_id — it has no
+        participation_id field.  We join Contest via RatingHistory.contest_id.
+        """
         old_rating = (
             self._db.query(RatingHistory.rating)
-            .join(ContestParticipation, ContestParticipation.id == RatingHistory.participation_id)
-            .join(Contest, Contest.id == ContestParticipation.contest_id)
+            .join(Contest, Contest.id == RatingHistory.contest_id)
             .filter(
-                ContestParticipation.profile_id.in_(profile_ids),
+                RatingHistory.profile_id.in_(profile_ids),
                 Contest.start_time < since,
             )
             .order_by(Contest.start_time.desc())
@@ -632,10 +721,9 @@ class PerformanceAnalyzer:
 
         new_rating = (
             self._db.query(RatingHistory.rating)
-            .join(ContestParticipation, ContestParticipation.id == RatingHistory.participation_id)
-            .join(Contest, Contest.id == ContestParticipation.contest_id)
+            .join(Contest, Contest.id == RatingHistory.contest_id)
             .filter(
-                ContestParticipation.profile_id.in_(profile_ids),
+                RatingHistory.profile_id.in_(profile_ids),
                 Contest.start_time >= since,
             )
             .order_by(Contest.start_time.asc())
@@ -762,7 +850,7 @@ class PerformanceAnalyzer:
                     category="consistency",
                     description=f"Strong consistency: {submission_behavior.longest_streak_days}-day longest streak",
                     supporting_metric="longest_streak_days",
-                    metric_value=submission.longest_streak_days,
+                    metric_value=submission_behavior.longest_streak_days,
                 )
             )
 
@@ -827,63 +915,69 @@ class PerformanceAnalyzer:
         """Assess data coverage and quality."""
         profile_ids = [p.id for p in profiles]
 
-        # Check topic data coverage
+        # Check topic data availability (not completeness — we can't verify that)
         has_leetcode = any(p.platform == Platform.LEETCODE for p in profiles)
         non_leetcode_profiles = [p for p in profiles if p.platform != Platform.LEETCODE]
 
-        has_complete_topic_data = False
+        has_topic_data = False
         if has_leetcode:
-            leetcode_topic_stats = (
+            lc_topic_stats = (
                 self._db.query(func.count(PlatformTopicStat.id))
                 .filter(PlatformTopicStat.profile_id.in_([p.id for p in profiles if p.platform == Platform.LEETCODE]))
                 .scalar() or 0
             )
-            has_complete_topic_data = leetcode_topic_stats > 0
-        elif non_leetcode_profiles:
-            non_leetcode_ids = [p.id for p in non_leetcode_profiles]
+            has_topic_data = lc_topic_stats > 0
+        if not has_topic_data and non_leetcode_profiles:
+            non_lc_ids = [p.id for p in non_leetcode_profiles]
             topic_data = (
-                self._db.query(func.count(ProblemTopic.id))
+                self._db.query(func.count())
+                .select_from(ProblemTopic)
                 .filter(ProblemTopic.problem_id.in_(
                     self._db.query(Submission.problem_id)
-                    .filter(Submission.profile_id.in_(non_leetcode_ids))
+                    .filter(Submission.profile_id.in_(non_lc_ids))
                     .distinct()
                 ))
                 .scalar() or 0
             )
-            has_complete_topic_data = topic_data > 0
+            has_topic_data = topic_data > 0
 
-        # Check submission history completeness
+        # Check submission data availability
         total_submissions = (
             self._db.query(func.count(Submission.id))
             .filter(Submission.profile_id.in_(profile_ids))
             .scalar() or 0
         )
-        has_complete_submission_history = total_submissions > 0
+        has_submission_data = total_submissions > 0
 
-        # Check contest history completeness
+        # Check contest data availability
         total_contests = (
             self._db.query(func.count(ContestParticipation.id))
             .filter(ContestParticipation.profile_id.in_(profile_ids))
             .scalar() or 0
         )
-        has_complete_contest_history = total_contests > 0
+        has_contest_data = total_contests > 0
 
         # Calculate solved counts
         profile_reported_solved = sum(p.problems_solved or 0 for p in profiles)
 
+        # locally_tagged_solved: distinct accepted problems that have at least one topic tag
+        non_lc_ids = [p.id for p in non_leetcode_profiles]
         locally_tagged_solved = 0
-        if has_leetcode:
-            locally_tagged_solved = profile_reported_solved  # LeetCode uses PlatformTopicStat
-        elif non_leetcode_profiles:
-            non_leetcode_ids = [p.id for p in non_leetcode_profiles]
+        if non_lc_ids:
             locally_tagged_solved = (
                 self._db.query(func.count(distinct(Submission.problem_id)))
                 .filter(
-                    Submission.profile_id.in_(non_leetcode_ids),
+                    Submission.profile_id.in_(non_lc_ids),
                     Submission.status == SubmissionStatus.ACCEPTED,
+                    Submission.problem_id.in_(
+                        self._db.query(ProblemTopic.problem_id).distinct()
+                    ),
                 )
                 .scalar() or 0
             )
+        # For LeetCode, profile_reported_solved is the best proxy.
+        if has_leetcode and not non_lc_ids:
+            locally_tagged_solved = profile_reported_solved
 
         # Calculate historical coverage
         earliest_submission = (
@@ -894,15 +988,18 @@ class PerformanceAnalyzer:
 
         historical_coverage_days = 0
         if earliest_submission:
+            # Ensure both datetimes are timezone-aware for comparison
+            if earliest_submission.tzinfo is None:
+                earliest_submission = earliest_submission.replace(tzinfo=timezone.utc)
             historical_coverage_days = (datetime.now(timezone.utc) - earliest_submission).days
 
         # Platform coverage
         platform_coverage = [p.platform.value for p in profiles]
 
         return DataQuality(
-            has_complete_topic_data=has_complete_topic_data,
-            has_complete_submission_history=has_complete_submission_history,
-            has_complete_contest_history=has_complete_contest_history,
+            has_topic_data=has_topic_data,
+            has_submission_data=has_submission_data,
+            has_contest_data=has_contest_data,
             profile_reported_solved=profile_reported_solved,
             locally_tagged_solved=locally_tagged_solved,
             historical_coverage_days=historical_coverage_days,

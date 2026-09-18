@@ -1,4 +1,4 @@
-import { Link, useRouterState } from "@tanstack/react-router";
+import { Link, useNavigate, useRouter, useRouterState } from "@tanstack/react-router";
 import {
   Bell,
   Bot,
@@ -7,6 +7,7 @@ import {
   Gauge,
   LayoutGrid,
   LineChart,
+  LogOut,
   Menu,
   Moon,
   Search,
@@ -18,7 +19,9 @@ import {
   X,
 } from "lucide-react";
 import { useState, type ReactNode } from "react";
+import { useQueryClient } from "@tanstack/react-query";
 
+import { logout } from "@/api/auth";
 import { useTheme } from "@/hooks/use-theme";
 import { useUser } from "@/hooks/useUser";
 import { cn } from "@/lib/utils";
@@ -106,6 +109,15 @@ function SidebarInner({
 }) {
   const pathname = useRouterState({ select: (s) => s.location.pathname });
   const { user, authenticated } = useUser();
+  const navigate = useNavigate();
+  const router = useRouter();
+  const queryClient = useQueryClient();
+
+  const handleLogout = () => {
+    logout();
+    queryClient.clear();
+    void router.invalidate().then(() => navigate({ to: "/auth" }));
+  };
 
   const initials = authenticated && user ? deriveInitials(user.username, user.full_name) : "?";
   const displayName = authenticated && user ? user.username : null;
@@ -181,6 +193,17 @@ function SidebarInner({
             </div>
           )}
           <ThemeToggle dark={dark} onToggle={onToggleTheme} tone="sidebar" />
+          {authenticated && (
+            <button
+              type="button"
+              onClick={handleLogout}
+              aria-label="Log out"
+              title="Log out"
+              className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-full border border-sidebar-border text-sidebar-foreground transition-colors hover:bg-sidebar-accent hover:text-destructive"
+            >
+              <LogOut className="h-4 w-4" strokeWidth={1.6} />
+            </button>
+          )}
         </div>
       </div>
     </div>

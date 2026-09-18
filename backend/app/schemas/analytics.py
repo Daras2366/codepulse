@@ -254,15 +254,34 @@ class AggregateSubmissionActivityResponse(BaseModel):
 # ---------------------------------------------------------------------------
 
 
+class PlatformRating(BaseModel):
+    """Rating for a single platform.
+
+    Ratings across different platforms (e.g. Codeforces, LeetCode) are on
+    incompatible scales and must never be combined into a single number.
+    """
+
+    platform: str
+    current_rating: int | None
+    max_rating: int | None
+
+
 class PerformanceOverview(BaseModel):
-    """High-level performance summary."""
+    """High-level performance summary.
+
+    ``current_rating`` / ``max_rating`` are the highest values seen across all
+    connected platforms.  Because rating scales differ per platform (Codeforces
+    vs LeetCode vs others), use ``ratings_by_platform`` for accurate
+    per-platform information.
+    """
     total_submissions: int
     accepted_submissions: int
     solved_problems: int
     contests_attended: int
     active_days: int
-    current_rating: int | None
-    max_rating: int | None
+    current_rating: int | None  # max across platforms — do not compare cross-platform
+    max_rating: int | None      # max across platforms — do not compare cross-platform
+    ratings_by_platform: list["PlatformRating"] = []  # per-platform, scale-safe
 
 
 class TopicPerformance(BaseModel):
@@ -275,13 +294,20 @@ class TopicPerformance(BaseModel):
 
 
 class DifficultyPerformance(BaseModel):
-    """Difficulty-specific performance analysis."""
+    """Difficulty-specific performance analysis.
+
+    ``attempt_count`` is the total number of submission attempts for this
+    difficulty level.  It is ``None`` when the source data does not contain
+    per-submission records (e.g. LeetCode profile-level difficulty counts).
+    Do not substitute the solved count for the attempt count.
+    """
     difficulty: str
     solved_count: int
-    attempt_count: int
+    attempt_count: int | None  # None when source data is unavailable
     acceptance_rate: float | None
     recent_activity: int  # Problems solved in last 30 days
     coverage_status: Literal["well_covered", "moderately_covered", "rarely_attempted", "not_attempted"]
+    platform: str | None = None  # Set when returning per-platform breakdowns
 
 
 class SubmissionBehavior(BaseModel):
@@ -296,23 +322,34 @@ class SubmissionBehavior(BaseModel):
 
 
 class ContestPerformance(BaseModel):
-    """Contest participation and performance."""
+    """Contest participation and performance.
+
+    ``current_rating`` / ``max_rating`` are the highest values seen across all
+    platforms.  Use ``ratings_by_platform`` for scale-accurate per-platform data.
+    """
     contests_participated: int
-    current_rating: int | None
-    max_rating: int | None
+    current_rating: int | None  # max across platforms
+    max_rating: int | None      # max across platforms
     average_rating_change: float | None
     recent_participation: int  # Contests in last 90 days
     participation_trend: Literal["increasing", "stable", "decreasing", "insufficient_data"]
+    ratings_by_platform: list["PlatformRating"] = []
 
 
 class RatingTrend(BaseModel):
-    """Rating progression analysis."""
-    current_rating: int | None
-    max_rating: int | None
+    """Rating progression analysis.
+
+    ``current_rating`` / ``max_rating`` are the highest values seen across all
+    platforms and must not be interpreted as a universal cross-platform rating.
+    Use ``ratings_by_platform`` for scale-accurate per-platform data.
+    """
+    current_rating: int | None  # max across platforms
+    max_rating: int | None      # max across platforms
     rating_change_30_days: int | None
     rating_change_90_days: int | None
     trend_direction: Literal["improving", "stable", "declining", "insufficient_data"]
     volatility_score: float | None  # 0-1 scale of rating stability
+    ratings_by_platform: list["PlatformRating"] = []
 
 
 class StrengthItem(BaseModel):
@@ -332,11 +369,17 @@ class WeaknessItem(BaseModel):
     confidence: Literal["high", "medium", "low"]
 
 
+
 class DataQuality(BaseModel):
-    """Data coverage and quality assessment."""
-    has_complete_topic_data: bool
-    has_complete_submission_history: bool
-    has_complete_contest_history: bool
+    """Data coverage and quality assessment.
+
+    Fields named ``has_*_data`` indicate whether *any* records of that type
+    exist locally.  They do not guarantee that the history is complete — that
+    cannot be determined from local data alone.
+    """
+    has_topic_data: bool
+    has_submission_data: bool
+    has_contest_data: bool
     profile_reported_solved: int
     locally_tagged_solved: int
     historical_coverage_days: int

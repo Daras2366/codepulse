@@ -1,5 +1,7 @@
-import { createFileRoute } from "@tanstack/react-router";
+import { createFileRoute, redirect } from "@tanstack/react-router";
 import { ArrowUpRight, Bot, BrainCircuit, Sparkles, TrendingUp, Waypoints } from "lucide-react";
+
+import { hasAccessToken } from "@/api/client";
 
 import { AppShell } from "@/components/layout/AppShell";
 import { StudyPlanCard } from "@/components/dashboard/StudyPlanCard";
@@ -11,6 +13,11 @@ const description =
   "AI-generated strengths, weaknesses, recommended problems, interview readiness and a 30-day rating forecast for your practice.";
 
 export const Route = createFileRoute("/ai-coach")({
+  beforeLoad: () => {
+    if (!hasAccessToken()) {
+      throw redirect({ to: "/auth" });
+    }
+  },
   head: () => ({
     meta: [
       { title },

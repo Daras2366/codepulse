@@ -1,6 +1,8 @@
 import { useState } from "react";
-import { createFileRoute } from "@tanstack/react-router";
+import { createFileRoute, redirect } from "@tanstack/react-router";
 import { Plus } from "lucide-react";
+
+import { hasAccessToken } from "@/api/client";
 
 import type { GoalProgress, GoalStatus } from "@/api/goals";
 import { GoalCard } from "@/components/dashboard/GoalCard";
@@ -14,6 +16,11 @@ const description =
   "Milestone cards for problem counts and targets, each with a rounded progress bar and status.";
 
 export const Route = createFileRoute("/goals")({
+  beforeLoad: () => {
+    if (!hasAccessToken()) {
+      throw redirect({ to: "/auth" });
+    }
+  },
   head: () => ({
     meta: [
       { title },

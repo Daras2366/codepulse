@@ -1,5 +1,7 @@
-import { createFileRoute } from "@tanstack/react-router";
+import { createFileRoute, redirect } from "@tanstack/react-router";
 import { ClipboardList, RefreshCw, Target, Trophy } from "lucide-react";
+
+import { hasAccessToken } from "@/api/client";
 
 import { getDashboardErrorMessage } from "@/api/client";
 import type { DashboardAggregateOverview } from "@/api/dashboard";
@@ -20,6 +22,11 @@ const description =
   "Track your combined competitive-programming progress with synced submissions, contests, ratings and problem statistics.";
 
 export const Route = createFileRoute("/")({
+  beforeLoad: () => {
+    if (!hasAccessToken()) {
+      throw redirect({ to: "/auth" });
+    }
+  },
   head: () => ({
     meta: [
       { title },
@@ -84,17 +91,6 @@ function OverviewStats({ overview }: { overview: DashboardAggregateOverview }) {
 function Dashboard() {
   const dashboard = useDashboard();
   const analytics = useAnalytics();
-
-  if (!dashboard.authenticated) {
-    return (
-      <AppShell title="Dashboard" subtitle="Your complete competitive programming progress.">
-        <EmptyState
-          title="Sign in to view your dashboard"
-          description="Use your CodePulse session to load your connected platform profiles."
-        />
-      </AppShell>
-    );
-  }
 
   if (dashboard.aggregate.isLoading || analytics.isLoadingProfiles) {
     return (

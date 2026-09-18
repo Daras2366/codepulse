@@ -14,7 +14,7 @@ Test cases:
 """
 
 import os
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from unittest import TestCase
 
 from fastapi import FastAPI
@@ -796,24 +796,8 @@ class AnalyticsApiTests(TestCase):
 
     def test_performance_analyzer_user_isolation(self):
         """Performance analyzer respects user isolation."""
-        # Create another user with data
-        other_user = User(
-            username="other-user",
-            email="other@example.com",
-            password_hash="hash",
-        )
-        self.session.add(other_user)
-        self.session.flush()
-
-        other_profile = PlatformProfile(
-            user_id=other_user.id,
-            platform=Platform.CODEFORCES,
-            username="other",
-            current_rating=1200,
-            max_rating=1300,
-        )
-        self.session.add(other_profile)
-        self.session.commit()
+        # Use the existing other_user and other_profile from setUp
+        # other_profile already exists for other_user
 
         # Current user's performance should not include other user's data
         resp = self.client.get("/analytics/performance")
@@ -823,24 +807,16 @@ class AnalyticsApiTests(TestCase):
 
     def test_performance_analyzer_multiple_platforms(self):
         """Performance analyzer handles multiple connected platforms."""
-        # Add a LeetCode profile with data
-        lc_profile = PlatformProfile(
-            user_id=self.current_user.id,
-            platform=Platform.LEETCODE,
-            username="leetcode_user",
-            current_rating=1600,
-            max_rating=1700,
-            problems_solved=100,
-            solved_easy=40,
-            solved_medium=50,
-            solved_hard=10,
-        )
-        self.session.add(lc_profile)
+        # Use the existing LeetCode profile from setUp and add data to it
+        self.leetcode_profile.problems_solved = 100
+        self.leetcode_profile.solved_easy = 40
+        self.leetcode_profile.solved_medium = 50
+        self.leetcode_profile.solved_hard = 10
         self.session.flush()
 
         # Add LeetCode topic stats
         lc_topic_stat = PlatformTopicStat(
-            profile_id=lc_profile.id,
+            profile_id=self.leetcode_profile.id,
             topic_name="Array",
             topic_slug="array",
             solved_count=25,
@@ -858,6 +834,10 @@ class AnalyticsApiTests(TestCase):
 
     def test_performance_analyzer_single_platform(self):
         """Performance analyzer works with single platform."""
+        # Remove LeetCode profile to test single platform
+        self.session.delete(self.leetcode_profile)
+        self.session.commit()
+
         resp = self.client.get("/analytics/performance")
         self.assertEqual(resp.status_code, 200)
         data = resp.json()
@@ -868,14 +848,8 @@ class AnalyticsApiTests(TestCase):
 
     def test_performance_analyzer_no_data(self):
         """Performance analyzer handles user with no data gracefully."""
-        # Create user with no profiles
-        empty_user = User(
-            username="empty-user",
-            email="empty@example.com",
-            password_hash="hash",
-        )
-        self.session.add(empty_user)
-        self.session.flush()
+        # Use the existing empty_user from setUp
+        empty_user = self.empty_user
 
         # Create a test app for the empty user
         empty_app = FastAPI()
@@ -955,8 +929,8 @@ class AnalyticsApiTests(TestCase):
         self.assertIsNotNone(submission_behavior["acceptance_rate"])
         self.assertEqual(submission_behavior["acceptance_rate"], 0.5)
 
-        # Should calculate active days
-        self.assertGreater(submission_behavior["active_days"], 0)
+        # Should calculate active days (in overview, not submission_behavior)
+        self.assertGreater(data["profile"]["overview"]["active_days"], 0)
 
     def test_performance_analyzer_contest_rating_analysis(self):
         """Performance analyzer correctly analyzes contest and rating performance."""
@@ -971,8 +945,9 @@ class AnalyticsApiTests(TestCase):
         self.assertEqual(contest_performance["contests_participated"], 2)
 
         # Should have rating trend data
-        self.assertEqual(rating_trend["current_rating"], 1500)
-        self.assertEqual(rating_trend["max_rating"], 1600)
+        # With both Codeforces (1500) and LeetCode (1600) profiles, current_rating is max (1600)
+        self.assertEqual(rating_trend["current_rating"], 1600)
+        self.assertEqual(rating_trend["max_rating"], 1700)
 
         # Check trend direction classification
         self.assertIn(rating_trend["trend_direction"], ["improving", "stable", "declining", "insufficient_data"])
@@ -989,7 +964,7 @@ class AnalyticsApiTests(TestCase):
         data = resp.json()
 
         # Should indicate insufficient data in data quality
-        self.assertFalse(data["profile"]["data_quality"]["has_complete_topic_data"])
+        self.assertFalse(data["profile"]["data_quality"]["has_topic_data"])
 
         # Topic performance should be empty or indicate insufficient data
         if data["profile"]["topic_performance"]:
@@ -998,17 +973,6 @@ class AnalyticsApiTests(TestCase):
 
     def test_performance_analyzer_zero_submissions(self):
         """Performance analyzer handles edge case of zero submissions."""
-        # Create profile with no submissions
-        no_sub_profile = PlatformProfile(
-            user_id=self.current_user.id,
-            platform=Platform.CODEFORCES,
-            username="nosub",
-            current_rating=None,
-            max_rating=None,
-        )
-        self.session.add(no_sub_profile)
-        self.session.commit()
-
         # Remove existing submissions
         self.session.query(Submission).delete()
         self.session.commit()
@@ -1022,23 +986,19 @@ class AnalyticsApiTests(TestCase):
         self.assertEqual(data["profile"]["submission_behavior"]["acceptance_rate"], None)
         self.assertEqual(data["profile"]["submission_behavior"]["average_submissions_per_active_day"], 0.0)
 
-        # ------------------------------------------------------------------
-        # Test 9i: Correct percentage math — sums approximately to 100
-        # ------------------------------------------------------------------
+    def test_aggregate_topic_breakdown_percentages_sum_to_100(self):
+        """Slice percentages must sum to approximately 100 % (±1 % for rounding)."""
+        resp = self.client.get(
+            "/analytics/aggregate/topic-breakdown?platforms=codeforces"
+        )
+        self.assertEqual(resp.status_code, 200)
+        data = resp.json()
 
-        def test_aggregate_topic_breakdown_percentages_sum_to_100(self):
-            """Slice percentages must sum to approximately 100 % (±1 % for rounding)."""
-            resp = self.client.get(
-                "/analytics/aggregate/topic-breakdown?platforms=codeforces"
-            )
-            self.assertEqual(resp.status_code, 200)
-            data = resp.json()
+        if not data["topics"]:
+            self.skipTest("No topic data to validate percentages")
 
-            if not data["topics"]:
-                self.skipTest("No topic data to validate percentages")
-
-            total_pct = sum(t["percentage"] for t in data["topics"])
-            self.assertAlmostEqual(total_pct, 100.0, delta=1.5)
+        total_pct = sum(t["percentage"] for t in data["topics"])
+        self.assertAlmostEqual(total_pct, 100.0, delta=1.5)
 
     def test_aggregate_topic_breakdown_returns_canonical_topics(self):
         canonical_tags = [
@@ -1222,3 +1182,239 @@ class AnalyticsApiTests(TestCase):
         
         # Should only include Codeforces submissions
         self.assertEqual(data["total_submissions"], 4)  # 4 submissions from Codeforces profile
+
+    # ======================================================================
+    # Targeted tests for Performance Analyzer bug fixes
+    # ======================================================================
+
+    # Fix #1: longest_streak_days >= 14 branch (was NameError: submission undefined)
+    def test_pa_fix1_longest_streak_14_day_strength_no_nameerror(self):
+        base = datetime.now(timezone.utc) - timedelta(days=20)
+        for i in range(14):
+            p = self._problem(
+                "fix1-streak-" + str(i), "Streak " + str(i), Difficulty.EASY, Platform.CODEFORCES
+            )
+            self.session.add(p)
+            self.session.flush()
+            self.session.add(Submission(
+                profile_id=self.profile.id,
+                problem_id=p.id,
+                contest_id=None,
+                platform_submission_id="fix1-s-" + str(i),
+                submitted_at=(base + timedelta(days=i)).replace(tzinfo=None),
+                language="Python 3",
+                status=SubmissionStatus.ACCEPTED,
+            ))
+        self.session.commit()
+        resp = self.client.get("/analytics/performance")
+        self.assertEqual(resp.status_code, 200, resp.text)
+        data = resp.json()
+        sb = data["profile"]["submission_behavior"]
+        self.assertGreaterEqual(sb["longest_streak_days"], 14)
+        streak_strengths = [
+            s for s in data["profile"]["strengths"]
+            if s["category"] == "consistency" and "longest_streak" in s["supporting_metric"]
+        ]
+        self.assertGreater(len(streak_strengths), 0, "Expected a consistency strength for 14-day streak")
+        # metric_value must equal submission_behavior.longest_streak_days (Bug #1 fix)
+        self.assertEqual(streak_strengths[0]["metric_value"], sb["longest_streak_days"])
+
+    # Fix #6: same-day submissions count as 1 active day
+    def test_pa_fix6_multiple_submissions_same_day_one_active_day(self):
+        # Remove all existing submissions so only our 3 same-day ones remain
+        self.session.query(Submission).delete()
+        self.session.commit()
+        now = datetime.now(timezone.utc)
+        for i in range(3):
+            p = self._problem(
+                "fix6-ad-" + str(i), "AD " + str(i), Difficulty.EASY, Platform.CODEFORCES
+            )
+            self.session.add(p)
+            self.session.flush()
+            self.session.add(Submission(
+                profile_id=self.profile.id,
+                problem_id=p.id,
+                contest_id=None,
+                platform_submission_id="fix6-ad-s" + str(i),
+                submitted_at=(now - timedelta(minutes=i * 10)).replace(tzinfo=None),
+                language="Python 3",
+                status=SubmissionStatus.ACCEPTED,
+            ))
+        self.session.commit()
+        resp = self.client.get("/analytics/performance")
+        self.assertEqual(resp.status_code, 200, resp.text)
+        data = resp.json()
+        self.assertEqual(data["profile"]["overview"]["active_days"], 1,
+                         "3 same-day submissions must count as exactly 1 active day")
+
+    # Fix #2: LeetCode difficulty attempt_count must be None
+    # setUp already creates self.leetcode_profile for self.current_user.
+    def test_pa_fix2_leetcode_difficulty_attempt_count_is_none(self):
+        self.leetcode_profile.problems_solved = 10
+        self.leetcode_profile.solved_easy = 5
+        self.leetcode_profile.solved_medium = 3
+        self.leetcode_profile.solved_hard = 2
+        self.session.commit()
+        resp = self.client.get("/analytics/performance")
+        self.assertEqual(resp.status_code, 200, resp.text)
+        data = resp.json()
+        diff_perf = data["profile"]["difficulty_performance"]
+        lc_entries = [d for d in diff_perf if d.get("platform") == "leetcode"]
+        self.assertGreater(len(lc_entries), 0, "Expected LeetCode difficulty entries in mixed mode")
+        for entry in lc_entries:
+            self.assertIsNone(
+                entry["attempt_count"],
+                "LeetCode " + entry["difficulty"] + " must have attempt_count=None"
+            )
+
+    # Fix #3: Mixed-platform topics include both LC and Codeforces data
+    # setUp already creates self.leetcode_profile; add PlatformTopicStats to it.
+    def test_pa_fix3_mixed_topic_includes_lc_and_cf_data(self):
+        self.leetcode_profile.problems_solved = 20
+        self.session.flush()
+        self.session.add(PlatformTopicStat(
+            profile_id=self.leetcode_profile.id,
+            topic_name="Dynamic Programming",
+            topic_slug="dynamic-programming",
+            solved_count=10,
+        ))
+        self.session.add(PlatformTopicStat(
+            profile_id=self.leetcode_profile.id,
+            topic_name="Binary Search",
+            topic_slug="binary-search",
+            solved_count=5,
+        ))
+        self.session.commit()
+        resp = self.client.get("/analytics/performance")
+        self.assertEqual(resp.status_code, 200, resp.text)
+        data = resp.json()
+        topics = {t["topic"]: t["solved_count"] for t in data["profile"]["topic_performance"]}
+        self.assertIn("Dynamic Programming", topics,
+                      "LeetCode DP topic must not be dropped in mixed mode")
+        self.assertIn("Binary Search", topics,
+                      "LeetCode Binary Search must not be dropped in mixed mode")
+        # Codeforces topics from setUp (Arrays, Graphs, DP) must also appear
+        cf_topics = [k for k in topics if k in ("Arrays", "Graphs", "DP")]
+        self.assertGreater(len(cf_topics), 0, "Codeforces topics must also appear in mixed mode")
+
+    # Fix #4: Mixed-platform difficulty includes LeetCode entries
+    # setUp already creates self.leetcode_profile; just set solved counts.
+    def test_pa_fix4_mixed_difficulty_includes_lc_entries(self):
+        self.leetcode_profile.problems_solved = 20
+        self.leetcode_profile.solved_easy = 10
+        self.leetcode_profile.solved_medium = 8
+        self.leetcode_profile.solved_hard = 2
+        self.session.commit()
+        resp = self.client.get("/analytics/performance")
+        self.assertEqual(resp.status_code, 200, resp.text)
+        data = resp.json()
+        diff_perf = data["profile"]["difficulty_performance"]
+        self.assertGreater(len(diff_perf), 0)
+        lc_entries = [d for d in diff_perf if d.get("platform") == "leetcode"]
+        self.assertGreater(len(lc_entries), 0,
+                           "LeetCode difficulty entries must appear in mixed mode")
+        for entry in lc_entries:
+            self.assertIsNone(entry["attempt_count"],
+                              "LC " + entry["difficulty"] + " must have attempt_count=None")
+
+    # Fix #4b: When Codeforces + CodeChef are both connected,
+    # difficulty platform label must be a joined name, not only the first platform.
+    def test_pa_fix4b_multi_non_lc_platforms_difficulty_label_is_joined(self):
+        cc_profile = PlatformProfile(
+            user_id=self.current_user.id,
+            platform=Platform.CODECHEF,
+            username="fix4b-cc",
+        )
+        self.session.add(cc_profile)
+        self.session.flush()
+        cc_p = Problem(
+            platform=Platform.CODECHEF,
+            platform_problem_id="CC-MIX-D1",
+            title="CC Mix Diff",
+            slug="codechef-cc-mix-d1",
+            problem_url="https://codechef.com/problems/CC-MIX-D1",
+            difficulty=Difficulty.MEDIUM,
+            acceptance_rate=None,
+        )
+        self.session.add(cc_p)
+        self.session.flush()
+        self.session.add(Submission(
+            profile_id=cc_profile.id,
+            problem_id=cc_p.id,
+            contest_id=None,
+            platform_submission_id="fix4b-cc-s1",
+            submitted_at=datetime.now(timezone.utc).replace(tzinfo=None),
+            language="C++",
+            status=SubmissionStatus.ACCEPTED,
+        ))
+        self.session.commit()
+        resp = self.client.get("/analytics/performance")
+        self.assertEqual(resp.status_code, 200, resp.text)
+        data = resp.json()
+        diff_perf = data["profile"]["difficulty_performance"]
+        for entry in diff_perf:
+            lbl = entry.get("platform")
+            if lbl is not None and lbl != "leetcode":
+                # Must not be labeled as only one of the two non-LC platforms
+                self.assertNotEqual(lbl, "codeforces",
+                                    "Label must reflect both CF+CC, not only codeforces")
+                self.assertNotEqual(lbl, "codechef",
+                                    "Label must reflect both CF+CC, not only codechef")
+                self.assertIn("+", lbl, "Expected a +-joined label, got: " + repr(lbl))
+
+    # Fix #5: DataQuality field naming
+    def test_pa_fix5_data_quality_has_accurate_field_names(self):
+        resp = self.client.get("/analytics/performance")
+        self.assertEqual(resp.status_code, 200, resp.text)
+        dq = resp.json()["profile"]["data_quality"]
+        # New accurate field names
+        self.assertIn("has_topic_data", dq)
+        self.assertIn("has_submission_data", dq)
+        self.assertIn("has_contest_data", dq)
+        # Old misleading names must not be present
+        self.assertNotIn("has_complete_topic_data", dq)
+        self.assertNotIn("has_complete_submission_history", dq)
+        self.assertNotIn("has_complete_contest_history", dq)
+        # setUp provides submissions + topics
+        self.assertTrue(dq["has_submission_data"])
+        self.assertTrue(dq["has_topic_data"])
+
+    # Fix #7: per-platform rating semantics
+    # setUp already creates self.leetcode_profile with current_rating=1600.
+    def test_pa_fix7_ratings_by_platform_in_overview(self):
+        self.leetcode_profile.current_rating = 1800
+        self.leetcode_profile.max_rating = 1900
+        self.session.commit()
+        resp = self.client.get("/analytics/performance")
+        self.assertEqual(resp.status_code, 200, resp.text)
+        data = resp.json()
+        overview = data["profile"]["overview"]
+        self.assertIn("ratings_by_platform", overview)
+        by_plat = {r["platform"]: r for r in overview["ratings_by_platform"]}
+        self.assertIn("codeforces", by_plat)
+        self.assertIn("leetcode", by_plat)
+        self.assertEqual(by_plat["codeforces"]["current_rating"], 1500)
+        self.assertEqual(by_plat["leetcode"]["current_rating"], 1800)
+        self.assertEqual(overview["current_rating"], 1800)
+
+    def test_pa_fix7_ratings_by_platform_in_contest_and_trend(self):
+        resp = self.client.get("/analytics/performance")
+        self.assertEqual(resp.status_code, 200, resp.text)
+        data = resp.json()
+        self.assertIn("ratings_by_platform", data["profile"]["contest_performance"])
+        self.assertIn("ratings_by_platform", data["profile"]["rating_trend"])
+
+    # Zero-submission user: profile connected but no submissions
+    def test_pa_zero_submissions_no_crash(self):
+        self.session.query(Submission).delete()
+        self.session.commit()
+        resp = self.client.get("/analytics/performance")
+        self.assertEqual(resp.status_code, 200, resp.text)
+        data = resp.json()
+        overview = data["profile"]["overview"]
+        self.assertEqual(overview["total_submissions"], 0)
+        self.assertEqual(overview["active_days"], 0)
+        sb = data["profile"]["submission_behavior"]
+        self.assertIsNone(sb["acceptance_rate"])
+        self.assertEqual(sb["average_submissions_per_active_day"], 0.0)
+        self.assertEqual(sb["longest_streak_days"], 0)

@@ -1,5 +1,7 @@
-import { createFileRoute } from "@tanstack/react-router";
+import { createFileRoute, redirect } from "@tanstack/react-router";
 import { CheckCircle2, Lock, Medal, RefreshCw } from "lucide-react";
+
+import { hasAccessToken } from "@/api/client";
 
 import { getDashboardErrorMessage } from "@/api/client";
 import { AppShell } from "@/components/layout/AppShell";
@@ -13,6 +15,11 @@ const description =
   "Badges earned across problem solving, contests and ratings, plus the milestones still waiting to be unlocked.";
 
 export const Route = createFileRoute("/achievements")({
+  beforeLoad: () => {
+    if (!hasAccessToken()) {
+      throw redirect({ to: "/auth" });
+    }
+  },
   head: () => ({
     meta: [
       { title },

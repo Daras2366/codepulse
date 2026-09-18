@@ -1,4 +1,6 @@
-import { createFileRoute } from "@tanstack/react-router";
+import { createFileRoute, redirect } from "@tanstack/react-router";
+
+import { hasAccessToken } from "@/api/client";
 
 import { AppShell } from "@/components/layout/AppShell";
 import { Skeleton } from "@/components/ui-kit/motion";
@@ -11,6 +13,11 @@ const description =
   "Manage your CodePulse profile settings, connected handles, and notification preferences.";
 
 export const Route = createFileRoute("/settings")({
+  beforeLoad: () => {
+    if (!hasAccessToken()) {
+      throw redirect({ to: "/auth" });
+    }
+  },
   head: () => ({
     meta: [
       { title },

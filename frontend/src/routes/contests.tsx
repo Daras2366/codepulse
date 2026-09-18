@@ -1,7 +1,7 @@
-import { createFileRoute } from "@tanstack/react-router";
+import { createFileRoute, redirect } from "@tanstack/react-router";
 import { useState } from "react";
 
-import { getDashboardErrorMessage } from "@/api/client";
+import { getDashboardErrorMessage, hasAccessToken } from "@/api/client";
 import { getDashboardContests } from "@/api/dashboard";
 import { ContestsTable, Leaderboard } from "@/components/dashboard/Tables";
 import { AppShell } from "@/components/layout/AppShell";
@@ -14,6 +14,11 @@ const title = "Contests — CodePulse";
 const description = "Every rated contest you entered, with rank, rating delta and status.";
 
 export const Route = createFileRoute("/contests")({
+  beforeLoad: () => {
+    if (!hasAccessToken()) {
+      throw redirect({ to: "/auth" });
+    }
+  },
   head: () => ({
     meta: [
       { title },
