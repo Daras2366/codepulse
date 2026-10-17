@@ -7,9 +7,9 @@ import { ChartSkeleton, EmptyState, ErrorState } from "@/components/ui-kit/motio
 import { Panel } from "@/components/ui-kit/Panel";
 
 const levels = [
-  "bg-muted",
-  "bg-[color-mix(in_oklab,var(--pastel-green)_35%,var(--card))]",
-  "bg-[color-mix(in_oklab,var(--pastel-green)_60%,var(--card))]",
+  "bg-[color-mix(in_oklab,var(--border)_60%,var(--card))]",
+  "bg-[color-mix(in_oklab,var(--pastel-green)_40%,var(--card))]",
+  "bg-[color-mix(in_oklab,var(--pastel-green)_65%,var(--card))]",
   "bg-[color-mix(in_oklab,var(--pastel-green)_85%,var(--card))]",
   "bg-[var(--success)]",
 ];

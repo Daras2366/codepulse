@@ -11,8 +11,21 @@ export class ApiError extends Error {
   }
 }
 
+/**
+ * Returns true when a JWT access token is present in localStorage.
+ *
+ * Server-side (SSR) the function intentionally returns `true` — the server has
+ * no access to the browser's localStorage and therefore cannot determine auth
+ * state.  Returning `false` on the server would cause every protected-route
+ * `beforeLoad` guard to fire a redirect to `/auth` before the page reaches the
+ * browser, even when the token is present.
+ *
+ * TanStack Router re-runs `beforeLoad` independently on the client after SSR
+ * hydration, so unauthenticated users are still redirected correctly.
+ */
 export function hasAccessToken() {
-  return typeof window !== "undefined" && Boolean(window.localStorage.getItem(ACCESS_TOKEN_KEY));
+  if (typeof window === "undefined") return true; // SSR: cannot read localStorage — let the client guard decide
+  return Boolean(window.localStorage.getItem(ACCESS_TOKEN_KEY));
 }
 
 function getAccessToken() {

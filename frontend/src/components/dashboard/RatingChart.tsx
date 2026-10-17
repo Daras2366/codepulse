@@ -260,24 +260,29 @@ export function RatingChart({
       return point;
     });
 
-    lines = Object.keys(platformDataMap).map((platform) => (
-      <Line
-        key={platform}
-        type="monotone"
-        dataKey={platform}
-        name={platform.charAt(0).toUpperCase() + platform.slice(1)}
-        stroke={PLATFORM_COLORS[platform] || "var(--pastel-blue)"}
-        strokeWidth={hovered === platform ? 3.5 : 2.5}
-        strokeOpacity={hovered && hovered !== platform ? 0.35 : 1}
-        dot={false}
-        activeDot={{ r: 5, strokeWidth: 2, stroke: "var(--card)" }}
-        connectNulls={true}
-        animationDuration={900}
-        animationEasing="ease-out"
-        onMouseEnter={() => setHovered(platform)}
-        onMouseLeave={() => setHovered(null)}
-      />
-    ));
+    lines = Object.keys(platformDataMap).map((platform) => {
+      const color = PLATFORM_COLORS[platform] || "var(--pastel-blue)";
+      const isHovered = hovered === platform;
+      const isDimmed = hovered !== null && !isHovered;
+      return (
+        <Line
+          key={platform}
+          type="linear"
+          dataKey={platform}
+          name={platform.charAt(0).toUpperCase() + platform.slice(1)}
+          stroke={color}
+          strokeWidth={isHovered ? 3.5 : 2.5}
+          strokeOpacity={isDimmed ? 0.35 : 1}
+          dot={false}
+          activeDot={{ r: 6, fill: color, stroke: "var(--card)", strokeWidth: 2 }}
+          connectNulls={true}
+          animationDuration={900}
+          animationEasing="ease-out"
+          onMouseEnter={() => setHovered(platform)}
+          onMouseLeave={() => setHovered(null)}
+        />
+      );
+    });
 
     legend = (
       <Legend
@@ -303,16 +308,17 @@ export function RatingChart({
       })
       .sort((a, b) => a.timestamp - b.timestamp);
 
+    const singleColor = PLATFORM_COLORS[platform || "codeforces"] || "var(--pastel-blue)";
     lines = [
       <Line
         key="single"
-        type="monotone"
+        type="linear"
         dataKey="rating"
         name="Rating"
-        stroke={PLATFORM_COLORS[platform || "codeforces"] || "var(--pastel-blue)"}
+        stroke={singleColor}
         strokeWidth={2.5}
         dot={false}
-        activeDot={{ r: 5, strokeWidth: 2, stroke: "var(--card)" }}
+        activeDot={{ r: 6, fill: singleColor, stroke: "var(--card)", strokeWidth: 2 }}
         connectNulls={true}
         animationDuration={900}
         animationEasing="ease-out"
