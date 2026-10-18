@@ -178,10 +178,15 @@ class GoalProgressCalculator:
     # ---- PROBLEMS ----
 
     def _calc_problems(self, goal: "Goal") -> int:
-        """Count distinct accepted problems in the goal's date window."""
+        """Count distinct accepted problems in the goal's date window.
+
+        Uses start_date if provided, otherwise uses goal.created_at as the effective
+        start date to ensure only activity after goal creation counts.
+        """
+        effective_start = goal.start_date if goal.start_date else goal.created_at.date()
         return self._repo.get_problems_solved_in_range(
             user_id=goal.user_id,
-            start_date=goal.start_date,
+            start_date=effective_start,
             end_date=goal.deadline,
             platform=goal.platform,
             difficulty=goal.difficulty_filter,
@@ -196,6 +201,7 @@ class GoalProgressCalculator:
                   Progress is calculated as (current_count - start_value) to exclude
                   problems solved before the goal was created.
         Codeforces: uses ProblemTopic join, filtered by goal date range.
+                  Uses start_date if provided, otherwise uses goal.created_at.
         """
         if goal.topic_slug is None:
             return 0
@@ -209,10 +215,11 @@ class GoalProgressCalculator:
             # Calculate progress from the baseline (start_value)
             return max(0, current_count - goal.start_value)
         elif platform == "codeforces":
+            effective_start = goal.start_date if goal.start_date else goal.created_at.date()
             return self._repo.get_topic_solved_count_codeforces(
                 user_id=goal.user_id,
                 topic_slug=goal.topic_slug,
-                start_date=goal.start_date,
+                start_date=effective_start,
                 end_date=goal.deadline,
             )
         else:
@@ -222,11 +229,12 @@ class GoalProgressCalculator:
                 topic_slug=goal.topic_slug,
             )
             lc_progress = max(0, lc_current - goal.start_value)
-            
+
+            effective_start = goal.start_date if goal.start_date else goal.created_at.date()
             cf = self._repo.get_topic_solved_count_codeforces(
                 user_id=goal.user_id,
                 topic_slug=goal.topic_slug,
-                start_date=goal.start_date,
+                start_date=effective_start,
                 end_date=goal.deadline,
             )
             return lc_progress + cf
@@ -234,10 +242,15 @@ class GoalProgressCalculator:
     # ---- CONSISTENCY ----
 
     def _calc_consistency(self, goal: "Goal") -> int:
-        """Count distinct active coding days in the goal's date window."""
+        """Count distinct active coding days in the goal's date window.
+
+        Uses start_date if provided, otherwise uses goal.created_at as the effective
+        start date to ensure only activity after goal creation counts.
+        """
+        effective_start = goal.start_date if goal.start_date else goal.created_at.date()
         return self._repo.get_active_days_in_range(
             user_id=goal.user_id,
-            start_date=goal.start_date,
+            start_date=effective_start,
             end_date=goal.deadline,
             platform=goal.platform,
         )
@@ -245,10 +258,15 @@ class GoalProgressCalculator:
     # ---- CONTEST ----
 
     def _calc_contest(self, goal: "Goal") -> int:
-        """Count contests participated in within the goal's date window."""
+        """Count contests participated in within the goal's date window.
+
+        Uses start_date if provided, otherwise uses goal.created_at as the effective
+        start date to ensure only activity after goal creation counts.
+        """
+        effective_start = goal.start_date if goal.start_date else goal.created_at.date()
         return self._repo.get_contests_in_range(
             user_id=goal.user_id,
-            start_date=goal.start_date,
+            start_date=effective_start,
             end_date=goal.deadline,
             platform=goal.platform,
         )
@@ -256,10 +274,15 @@ class GoalProgressCalculator:
     # ---- PLACEMENT ----
 
     def _calc_placement(self, goal: "Goal") -> int:
-        """Placement = accepted problems with optional difficulty filter."""
+        """Placement = accepted problems with optional difficulty filter.
+
+        Uses start_date if provided, otherwise uses goal.created_at as the effective
+        start date to ensure only activity after goal creation counts.
+        """
+        effective_start = goal.start_date if goal.start_date else goal.created_at.date()
         return self._repo.get_problems_solved_in_range(
             user_id=goal.user_id,
-            start_date=goal.start_date,
+            start_date=effective_start,
             end_date=goal.deadline,
             platform=goal.platform,
             difficulty=goal.difficulty_filter,
@@ -295,19 +318,21 @@ class GoalProgressCalculator:
                 return "completed"
             if goal.deadline is None:
                 return "on_track"
-            total_days = (goal.deadline - (goal.start_date or goal.created_at.date())).days
-            elapsed = (today - (goal.start_date or goal.created_at.date())).days
+            effective_start = goal.start_date if goal.start_date else goal.created_at.date()
+            total_days = (goal.deadline - effective_start).days
+            elapsed = (today - effective_start).days
             if total_days <= 0:
                 return "on_track"
             expected_pct = elapsed / total_days * 100
             return self._pace_label(pct, expected_pct)
 
         # Other types with a deadline
-        if goal.deadline is None or goal.start_date is None:
+        if goal.deadline is None:
             return "no_deadline"
 
-        total_days = (goal.deadline - goal.start_date).days
-        elapsed = (today - goal.start_date).days
+        effective_start = goal.start_date if goal.start_date else goal.created_at.date()
+        total_days = (goal.deadline - effective_start).days
+        elapsed = (today - effective_start).days
 
         if total_days <= 0:
             return "on_track"

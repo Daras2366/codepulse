@@ -80,10 +80,9 @@ class GoalService:
             repo = GoalProgressRepository(self.db)
             start_value = repo.get_topic_solved_count_leetcode(user_id, data.topic_slug)
 
-        # Default start_date to today if not provided - this is the effective start
-        # date from which progress counting begins
-        if goal_data.get("start_date") is None:
-            goal_data["start_date"] = date.today()
+        # start_date is optional. If not provided, it remains None in the database,
+        # and progress calculations use goal.created_at as the effective start date.
+        # This ensures only activity after goal creation counts toward progress.
 
         goal = Goal(
             **goal_data,

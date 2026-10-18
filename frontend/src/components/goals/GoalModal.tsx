@@ -200,11 +200,11 @@ export function GoalModal(props: GoalModalProps) {
                 className="mt-1 h-10 w-full rounded-2xl border border-border bg-background px-4 text-caption outline-none focus:border-violet"
                 disabled={isEditing}
               >
-                <option value="problems">Problems</option>
-                <option value="topic">Topic</option>
-                <option value="rating">Rating</option>
-                <option value="consistency">Consistency</option>
-                <option value="contest">Contest</option>
+                <option value="problems">Problems — count solved problems</option>
+                <option value="topic">Topic — track specific topics (e.g., Arrays, DP)</option>
+                <option value="rating">Rating — reach a target rating</option>
+                <option value="consistency">Consistency — active coding days</option>
+                <option value="contest">Contest — contest participations</option>
               </select>
             </div>
 
@@ -244,23 +244,29 @@ export function GoalModal(props: GoalModalProps) {
 
             {/* Difficulty filter - optional for problems */}
             {goalType === "problems" && (
-              <div>
-                <label className="text-label block uppercase text-subtle">
-                  Difficulty filter (optional)
-                </label>
-                <select
-                  value={difficultyFilter || ""}
-                  onChange={(e) =>
-                    setDifficultyFilter(e.target.value as "Easy" | "Medium" | "Hard" | undefined)
-                  }
-                  className="mt-1 h-10 w-full rounded-2xl border border-border bg-background px-4 text-caption outline-none focus:border-violet"
-                >
-                  <option value="">All difficulties</option>
-                  <option value="Easy">Easy</option>
-                  <option value="Medium">Medium</option>
-                  <option value="Hard">Hard</option>
-                </select>
-              </div>
+              <>
+                <div>
+                  <label className="text-label block uppercase text-subtle">
+                    Difficulty filter (optional)
+                  </label>
+                  <select
+                    value={difficultyFilter || ""}
+                    onChange={(e) =>
+                      setDifficultyFilter(e.target.value as "Easy" | "Medium" | "Hard" | undefined)
+                    }
+                    className="mt-1 h-10 w-full rounded-2xl border border-border bg-background px-4 text-caption outline-none focus:border-violet"
+                  >
+                    <option value="">All difficulties</option>
+                    <option value="Easy">Easy</option>
+                    <option value="Medium">Medium</option>
+                    <option value="Hard">Hard</option>
+                  </select>
+                </div>
+                <p className="text-caption text-subtle">
+                  Use the Topic goal type to track problems by specific topics (e.g., Arrays,
+                  Dynamic Programming).
+                </p>
+              </>
             )}
 
             <div>

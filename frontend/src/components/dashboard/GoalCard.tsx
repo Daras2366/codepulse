@@ -68,9 +68,10 @@ export function GoalCard({
         <AnimatedBar value={pct} color={bar} />
         <div className="mt-3 flex items-center justify-between">
           <p className="text-label text-subtle">
+            {isAchieved && <span className="mr-1.5 font-medium text-success">Goal achieved</span>}
             {progress.current_value.toLocaleString()} of {progress.target_value.toLocaleString()}
             {progress.goal_type === "consistency" && " active days"}
-            {progress.remaining > 0 && (
+            {!isAchieved && progress.remaining > 0 && (
               <span className="ml-1 text-subtle/70">· {progress.remaining} remaining</span>
             )}
           </p>

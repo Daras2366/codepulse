@@ -586,8 +586,7 @@ class GoalHistoricalProgressTests(TestCase):
     # ---- Test 13: Existing goal without start_date uses created_at ----
 
     def test_existing_goal_no_start_date_uses_created_at(self):
-        """Goal without explicit start_date defaults to goal creation date."""
-        # This is already tested implicitly, but let's be explicit
+        """Goal without explicit start_date uses created_at as effective start."""
         p1 = _make_problem(self.session, "NO1", "No start 1", Difficulty.EASY)
 
         # Solve problem yesterday (before goal creation)
@@ -595,7 +594,7 @@ class GoalHistoricalProgressTests(TestCase):
         _make_accepted_submission(self.session, self.cf_profile.id, p1.id, yesterday)
         self.session.commit()
 
-        # Create goal WITHOUT explicit start_date (defaults to today)
+        # Create goal WITHOUT explicit start_date (start_date will be None in DB)
         resp = self.client.post(
             "/goals/",
             json={
@@ -608,6 +607,131 @@ class GoalHistoricalProgressTests(TestCase):
         self.assertEqual(resp.status_code, 201)
         data = resp.json()
 
-        # start_date defaults to today, so yesterday's problem doesn't count
-        self.assertEqual(data["start_date"], str(date.today()))
+        # start_date is None in DB, but progress calculation uses created_at
+        self.assertIsNone(data["start_date"])
+        # Since yesterday's problem is before created_at (today), it shouldn't count
         self.assertEqual(data["current_value"], 0)
+
+        # Now solve a problem TODAY (after goal creation)
+        p2 = _make_problem(self.session, "NO2", "No start 2", Difficulty.EASY)
+        _make_accepted_submission(self.session, self.cf_profile.id, p2.id, date.today())
+        self.session.commit()
+
+        # Re-fetch goal progress
+        goal_id = data["id"]
+        resp = self.client.get(f"/goals/{goal_id}/progress")
+        self.assertEqual(resp.status_code, 200)
+        data = resp.json()
+
+        # Should now be 1/5 (only p2 counts, which was after creation)
+        self.assertEqual(data["current_value"], 1)
+
+    # ---- Test 14: Duplicate submissions do not inflate distinct-problem goals ----
+
+    def test_duplicate_submissions_not_counted(self):
+        """Multiple accepted submissions for the same problem should count as 1."""
+        p1 = _make_problem(self.session, "DUP1", "Duplicate 1", Difficulty.EASY)
+
+        today = date.today()
+        # Submit the same problem 3 times at slightly different times
+        _make_accepted_submission(self.session, self.cf_profile.id, p1.id, datetime(today.year, today.month, today.day, 10, 0, tzinfo=timezone.utc))
+        _make_accepted_submission(self.session, self.cf_profile.id, p1.id, datetime(today.year, today.month, today.day, 11, 0, tzinfo=timezone.utc))
+        _make_accepted_submission(self.session, self.cf_profile.id, p1.id, datetime(today.year, today.month, today.day, 12, 0, tzinfo=timezone.utc))
+        self.session.commit()
+
+        # Create goal
+        resp = self.client.post(
+            "/goals/",
+            json={
+                "title": "Solve 5 problems",
+                "goal_type": "problems",
+                "target_value": 5,
+                "deadline": str(today + timedelta(days=30)),
+            },
+        )
+        self.assertEqual(resp.status_code, 201)
+        data = resp.json()
+
+        # Should count as 1 distinct problem, not 3
+        self.assertEqual(data["current_value"], 1)
+
+    # ---- Test 15: Over-target progress displays correctly with capped percentage ----
+
+    def test_over_target_progress_capped_percentage(self):
+        """Goals exceeding target should show correct count with percentage capped at 100%."""
+        p1 = _make_problem(self.session, "OT1", "Over 1", Difficulty.EASY)
+        p2 = _make_problem(self.session, "OT2", "Over 2", Difficulty.EASY)
+        p3 = _make_problem(self.session, "OT3", "Over 3", Difficulty.EASY)
+
+        today = date.today()
+        _make_accepted_submission(self.session, self.cf_profile.id, p1.id, today)
+        _make_accepted_submission(self.session, self.cf_profile.id, p2.id, today)
+        _make_accepted_submission(self.session, self.cf_profile.id, p3.id, today)
+        self.session.commit()
+
+        # Create goal with target of 2
+        resp = self.client.post(
+            "/goals/",
+            json={
+                "title": "Solve 2 problems",
+                "goal_type": "problems",
+                "target_value": 2,
+                "deadline": str(today + timedelta(days=30)),
+            },
+        )
+        self.assertEqual(resp.status_code, 201)
+        data = resp.json()
+
+        # Should show actual count (3) but percentage capped at 100
+        self.assertEqual(data["current_value"], 3)
+        self.assertEqual(data["target_value"], 2)
+        self.assertEqual(data["progress_percentage"], 100.0)
+        self.assertEqual(data["remaining"], 0)
+        self.assertTrue(data["is_completed"])
+        self.assertEqual(data["status"], "completed")
+
+    # ---- Test 16: Arrays topic goal does not count unrelated problems ----
+
+    def test_arrays_topic_goal_filters_correctly(self):
+        """Topic goal for Arrays should only count problems tagged with Arrays."""
+        # Create topics
+        arrays_topic = _make_topic(self.session, "array")
+        dp_topic = _make_topic(self.session, "dynamic programming")
+
+        # Create problems with different topics
+        p_array1 = _make_problem(self.session, "ARR1", "Array Problem 1", Difficulty.EASY)
+        p_array2 = _make_problem(self.session, "ARR2", "Array Problem 2", Difficulty.EASY)
+        p_dp = _make_problem(self.session, "DP1", "DP Problem", Difficulty.MEDIUM)
+
+        # Tag problems correctly
+        _make_problem_topic(self.session, p_array1.id, arrays_topic.id)
+        _make_problem_topic(self.session, p_array2.id, arrays_topic.id)
+        _make_problem_topic(self.session, p_dp.id, dp_topic.id)
+
+        # Solve all problems today
+        today = date.today()
+        _make_accepted_submission(self.session, self.cf_profile.id, p_array1.id, today)
+        _make_accepted_submission(self.session, self.cf_profile.id, p_array2.id, today)
+        _make_accepted_submission(self.session, self.cf_profile.id, p_dp.id, today)
+        self.session.commit()
+
+        # Create TOPIC goal for Arrays (slug matches the form's canonical identifier)
+        resp = self.client.post(
+            "/goals/",
+            json={
+                "title": "Solve 5 Array problems",
+                "goal_type": "topic",
+                "target_value": 5,
+                "platform": "codeforces",
+                "topic_slug": "array",
+                "topic_name": "Array",
+                "deadline": str(today + timedelta(days=30)),
+            },
+        )
+        self.assertEqual(resp.status_code, 201)
+        data = resp.json()
+
+        # Should only count the 2 Array problems, not the DP problem
+        self.assertEqual(data["current_value"], 2)
+        self.assertEqual(data["remaining"], 3)
+        self.assertFalse(data["is_completed"])
