@@ -210,3 +210,103 @@ export function getAggregateSubmissionActivity(platforms?: string[], rangeDays?:
     `/analytics/aggregate/submission-activity${queryString ? `?${queryString}` : ""}`,
   );
 }
+
+export interface StrengthItem {
+  category: "topic" | "difficulty" | "contest" | "consistency";
+  description: string;
+  supporting_metric: string;
+  metric_value: number | string;
+}
+
+export interface WeaknessItem {
+  category: "topic" | "difficulty" | "contest" | "consistency";
+  description: string;
+  supporting_metric: string;
+  metric_value: number | string;
+  confidence: "high" | "medium" | "low";
+}
+
+export interface DataQuality {
+  has_topic_data: boolean;
+  has_submission_data: boolean;
+  has_contest_data: boolean;
+  profile_reported_solved: number;
+  locally_tagged_solved: number;
+  historical_coverage_days: number;
+  platform_coverage: string[];
+}
+
+export interface PerformanceProfile {
+  overview: {
+    total_submissions: number;
+    accepted_submissions: number;
+    solved_problems: number;
+    contests_attended: number;
+    active_days: number;
+    current_rating: number | null;
+    max_rating: number | null;
+    ratings_by_platform: Array<{
+      platform: string;
+      current_rating: number | null;
+      max_rating: number | null;
+    }>;
+  };
+  topic_performance: Array<{
+    topic: string;
+    solved_count: number;
+    percentage: number;
+    strength_level: "strong" | "moderate" | "weak" | "insufficient_data";
+    recent_activity: number;
+  }>;
+  difficulty_performance: Array<{
+    difficulty: string;
+    solved_count: number;
+    attempt_count: number | null;
+    acceptance_rate: number | null;
+    recent_activity: number;
+    coverage_status: "well_covered" | "moderately_covered" | "rarely_attempted" | "not_attempted";
+    platform: string | null;
+  }>;
+  submission_behavior: {
+    total_submissions: number;
+    accepted_submissions: number;
+    acceptance_rate: number | null;
+    average_submissions_per_active_day: number;
+    longest_streak_days: number;
+    current_streak_days: number;
+    repeated_attempts_count: number;
+  };
+  contest_performance: {
+    contests_participated: number;
+    current_rating: number | null;
+    max_rating: number | null;
+    average_rating_change: number | null;
+    recent_participation: number;
+    participation_trend: "increasing" | "stable" | "decreasing" | "insufficient_data";
+    ratings_by_platform: Array<{
+      platform: string;
+      current_rating: number | null;
+      max_rating: number | null;
+    }>;
+  };
+  rating_trend: {
+    current_rating: number | null;
+    max_rating: number | null;
+    rating_change_30_days: number | null;
+    rating_change_90_days: number | null;
+    trend_direction: "improving" | "stable" | "declining" | "insufficient_data";
+    volatility_score: number | null;
+    ratings_by_platform: Array<{
+      platform: string;
+      current_rating: number | null;
+      max_rating: number | null;
+    }>;
+  };
+  strengths: StrengthItem[];
+  weaknesses: WeaknessItem[];
+  data_quality: DataQuality;
+}
+
+export function getPerformanceProfile() {
+  return apiRequest<{ profile: PerformanceProfile }>("/analytics/performance");
+}

@@ -408,3 +408,28 @@ class PerformanceProfile(BaseModel):
 class PerformanceProfileResponse(BaseModel):
     """API response wrapper for performance profile."""
     profile: PerformanceProfile
+
+
+# ---------------------------------------------------------------------------
+# Recommendations
+# ---------------------------------------------------------------------------
+
+
+class Recommendation(BaseModel):
+    """A single actionable recommendation."""
+
+    category: Literal["topic", "difficulty", "consistency", "contest"]
+    title: str
+    reason: str
+    priority: Literal["high", "medium", "low"]
+    suggested_activity: str
+    target_metric: str
+    difficulty_suggestion: Literal["easy", "medium", "hard", "mixed"]
+
+
+class RecommendationsResponse(BaseModel):
+    """API response for personalized recommendations."""
+
+    recommendations: list[Recommendation]
+    data_quality: DataQuality
+    has_sufficient_data: bool

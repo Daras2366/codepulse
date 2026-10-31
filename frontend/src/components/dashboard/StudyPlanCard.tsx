@@ -13,11 +13,12 @@ export function StudyPlanCard() {
         <div className="min-w-0">
           <Pill tone="green">
             <Sparkles className="h-3.5 w-3.5" strokeWidth={1.6} />
-            Today's study plan
+            Study plan
           </Pill>
+          {/* NOTE: This card uses placeholder data. Personalized plans are not yet implemented. */}
           <h2 className="text-h2 mt-5">Three problems on {studyPlan.topic}.</h2>
           <p className="text-body mt-2 max-w-xl text-muted-foreground">
-            Built from this week's contest misses. Work top to bottom — each one leans on the last.
+            Sample study plan — personalized plans coming soon.
           </p>
 
           <ul className="mt-6 space-y-3">
