@@ -1,8 +1,8 @@
-import { createFileRoute, redirect } from "@tanstack/react-router";
+import { createFileRoute, redirect, useNavigate } from "@tanstack/react-router";
 import { ClipboardList, RefreshCw, Target, Trophy } from "lucide-react";
+import { useEffect } from "react";
 
 import { hasAccessToken } from "@/api/client";
-
 import { getDashboardErrorMessage } from "@/api/client";
 import type { DashboardAggregateOverview } from "@/api/dashboard";
 import { ActivityTimeline } from "@/components/dashboard/ActivityTimeline";
@@ -15,6 +15,7 @@ import { TopicDonut } from "@/components/dashboard/TopicDonut";
 import { AppShell } from "@/components/layout/AppShell";
 import { EmptyState, ErrorState, Skeleton } from "@/components/ui-kit/motion";
 import { useAnalytics } from "@/hooks/useAnalytics";
+import { useAuth } from "@/contexts/AuthContext";
 import { useDashboard } from "@/hooks/useDashboard";
 
 const title = "CodePulse — Competitive Programming Tracker";
@@ -23,7 +24,9 @@ const description =
 
 export const Route = createFileRoute("/")({
   beforeLoad: () => {
-    if (!hasAccessToken()) {
+    // During SSR, we can't check localStorage, so don't redirect
+    // The client-side authentication check will handle unauthenticated users
+    if (typeof window !== "undefined" && !hasAccessToken()) {
       throw redirect({ to: "/auth" });
     }
   },
@@ -89,8 +92,31 @@ function OverviewStats({ overview }: { overview: DashboardAggregateOverview }) {
 }
 
 function Dashboard() {
+  const auth = useAuth();
+  const navigate = useNavigate();
   const dashboard = useDashboard();
   const analytics = useAnalytics();
+
+  // Redirect to auth if not authenticated
+  useEffect(() => {
+    if (!auth.isLoading && !auth.isAuthenticated) {
+      void navigate({ to: "/auth" });
+    }
+  }, [auth.isLoading, auth.isAuthenticated, navigate]);
+
+  // Show loading while checking auth
+  if (auth.isLoading) {
+    return (
+      <AppShell title="Dashboard" subtitle="Your complete competitive programming progress.">
+        <DashboardStatSkeletons />
+      </AppShell>
+    );
+  }
+
+  // Don't render if not authenticated (redirect is in progress)
+  if (!auth.isAuthenticated) {
+    return null;
+  }
 
   if (dashboard.aggregate.isLoading || analytics.isLoadingProfiles) {
     return (

@@ -16,7 +16,9 @@ const description =
 
 export const Route = createFileRoute("/achievements")({
   beforeLoad: () => {
-    if (!hasAccessToken()) {
+    // During SSR, we can't check localStorage, so don't redirect
+    // The component will handle redirecting unauthenticated users
+    if (typeof window !== "undefined" && !hasAccessToken()) {
       throw redirect({ to: "/auth" });
     }
   },

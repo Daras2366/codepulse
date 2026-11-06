@@ -7,6 +7,7 @@ import {
   Gauge,
   LayoutGrid,
   LineChart,
+  LogIn,
   LogOut,
   Menu,
   Moon,
@@ -23,7 +24,7 @@ import { useQueryClient } from "@tanstack/react-query";
 
 import { logout } from "@/api/auth";
 import { useTheme } from "@/hooks/use-theme";
-import { useUser } from "@/hooks/useUser";
+import { useAuth } from "@/contexts/AuthContext";
 import { cn } from "@/lib/utils";
 
 const nav = [
@@ -46,10 +47,12 @@ function deriveInitials(username: string | undefined, fullName: string | null | 
   // Prefer full_name initials (e.g. "Jane Doe" → "JD")
   if (fullName) {
     const parts = fullName.trim().split(/\s+/);
-    if (parts.length >= 2) {
+    if (parts.length >= 2 && parts[0] && parts[parts.length - 1]) {
       return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
     }
-    return fullName.slice(0, 2).toUpperCase();
+    if (fullName) {
+      return fullName.slice(0, 2).toUpperCase();
+    }
   }
   // Fall back to first two chars of username
   if (username) {
@@ -108,7 +111,7 @@ function SidebarInner({
   onNavigate?: () => void;
 }) {
   const pathname = useRouterState({ select: (s) => s.location.pathname });
-  const { user, authenticated } = useUser();
+  const { user, isAuthenticated } = useAuth();
   const navigate = useNavigate();
   const router = useRouter();
   const queryClient = useQueryClient();
@@ -119,9 +122,13 @@ function SidebarInner({
     void router.invalidate().then(() => navigate({ to: "/auth" }));
   };
 
-  const initials = authenticated && user ? deriveInitials(user.username, user.full_name) : "?";
-  const displayName = authenticated && user ? user.username : null;
-  const displaySub = authenticated && user ? user.email : null;
+  const handleSignIn = () => {
+    void navigate({ to: "/auth" });
+  };
+
+  const initials = isAuthenticated && user ? deriveInitials(user.username, user.full_name) : "?";
+  const displayName = isAuthenticated && user ? user.username : null;
+  const displaySub = isAuthenticated && user ? user.email : null;
 
   return (
     <div className="flex h-full flex-col bg-sidebar px-4 py-6 text-sidebar-foreground">
@@ -165,22 +172,27 @@ function SidebarInner({
       {/* User identity footer */}
       <div className="mt-6 border-t border-sidebar-border pt-4">
         <div className={cn("flex items-center gap-3", collapsed && "flex-col gap-3")}>
-          <span
+          <button
+            type="button"
+            onClick={isAuthenticated ? undefined : handleSignIn}
             className={cn(
-              "flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-caption font-semibold text-[#111111]",
-              authenticated ? "bg-pink" : "bg-muted text-muted-foreground",
+              "flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-caption font-semibold text-[#111111] transition-colors",
+              isAuthenticated
+                ? "bg-pink"
+                : "bg-muted text-muted-foreground hover:bg-sidebar-accent",
             )}
-            aria-label={authenticated ? `Signed in as ${displayName ?? ""}` : "Not signed in"}
+            aria-label={isAuthenticated ? `Signed in as ${displayName ?? ""}` : "Sign in"}
+            title={isAuthenticated ? undefined : "Sign in"}
           >
-            {authenticated ? (
+            {isAuthenticated ? (
               initials
             ) : (
               <User className="h-4 w-4 text-muted-foreground" strokeWidth={1.6} />
             )}
-          </span>
+          </button>
           {!collapsed && (
             <div className="min-w-0 flex-1">
-              {authenticated && displayName ? (
+              {isAuthenticated && displayName ? (
                 <>
                   <p className="truncate text-caption font-semibold">{displayName}</p>
                   {displaySub && (
@@ -188,12 +200,18 @@ function SidebarInner({
                   )}
                 </>
               ) : (
-                <p className="truncate text-caption text-sidebar-muted">Not signed in</p>
+                <button
+                  type="button"
+                  onClick={handleSignIn}
+                  className="truncate text-caption text-sidebar-muted hover:text-sidebar-foreground"
+                >
+                  Sign in
+                </button>
               )}
             </div>
           )}
           <ThemeToggle dark={dark} onToggle={onToggleTheme} tone="sidebar" />
-          {authenticated && (
+          {isAuthenticated ? (
             <button
               type="button"
               onClick={handleLogout}
@@ -202,6 +220,16 @@ function SidebarInner({
               className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-full border border-sidebar-border text-sidebar-foreground transition-colors hover:bg-sidebar-accent hover:text-destructive"
             >
               <LogOut className="h-4 w-4" strokeWidth={1.6} />
+            </button>
+          ) : (
+            <button
+              type="button"
+              onClick={handleSignIn}
+              aria-label="Sign in"
+              title="Sign in"
+              className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-full border border-sidebar-border text-sidebar-foreground transition-colors hover:bg-sidebar-accent"
+            >
+              <LogIn className="h-4 w-4" strokeWidth={1.6} />
             </button>
           )}
         </div>
@@ -228,9 +256,22 @@ export function AppShell({
   const [collapsed, setCollapsed] = useState(false);
   const [mobileOpen, setMobileOpen] = useState(false);
   const dark = theme === "dark";
+  const navigate = useNavigate();
+  const router = useRouter();
+  const queryClient = useQueryClient();
 
-  const { user, authenticated } = useUser();
-  const initials = authenticated && user ? deriveInitials(user.username, user.full_name) : "?";
+  const { user, isAuthenticated } = useAuth();
+  const initials = isAuthenticated && user ? deriveInitials(user.username, user.full_name) : "?";
+
+  const handleLogout = () => {
+    logout();
+    queryClient.clear();
+    void router.invalidate().then(() => navigate({ to: "/auth" }));
+  };
+
+  const handleSignIn = () => {
+    void navigate({ to: "/auth" });
+  };
 
   return (
     <div className="flex min-h-screen w-full bg-background">
@@ -323,21 +364,28 @@ export function AppShell({
               </button>
               <ThemeToggle dark={dark} onToggle={toggle} />
               {/* Header avatar — mirrors sidebar identity */}
-              <span
+              <button
+                type="button"
+                onClick={isAuthenticated ? handleLogout : handleSignIn}
                 className={cn(
-                  "flex h-9 w-9 items-center justify-center rounded-full text-caption font-semibold text-[#111111]",
-                  authenticated ? "bg-violet" : "bg-muted",
+                  "press flex h-9 w-9 items-center justify-center rounded-full text-caption font-semibold text-[#111111] transition-colors",
+                  isAuthenticated
+                    ? "bg-violet"
+                    : "bg-muted text-muted-foreground hover:bg-sidebar-accent",
                 )}
                 aria-label={
-                  authenticated ? `Signed in as ${user?.username ?? ""}` : "Not signed in"
+                  isAuthenticated
+                    ? `Signed in as ${user?.username ?? ""}. Click to sign out.`
+                    : "Sign in"
                 }
+                title={isAuthenticated ? "Sign out" : "Sign in"}
               >
-                {authenticated ? (
+                {isAuthenticated ? (
                   initials
                 ) : (
                   <User className="h-4 w-4 text-muted-foreground" strokeWidth={1.6} />
                 )}
-              </span>
+              </button>
             </div>
           </div>
         </header>

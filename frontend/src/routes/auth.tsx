@@ -1,9 +1,10 @@
 import { createFileRoute, redirect, useNavigate, useRouter } from "@tanstack/react-router";
 import { useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { Eye, EyeOff } from "lucide-react";
 
 import { login, register, type LoginRequest, type RegisterRequest, AuthError } from "@/api/auth";
-import { hasAccessToken } from "@/api/client";
+import { useAuth } from "@/contexts/AuthContext";
 import { userQueryKeys } from "@/hooks/useUser";
 
 const title = "Sign in — CodePulse";
@@ -11,10 +12,8 @@ const description = "Sign in to your CodePulse account";
 
 export const Route = createFileRoute("/auth")({
   beforeLoad: () => {
-    // Already authenticated — send to dashboard
-    if (hasAccessToken()) {
-      throw redirect({ to: "/" });
-    }
+    // During SSR, we can't check localStorage, so don't redirect
+    // The component will handle redirecting authenticated users
   },
   head: () => ({
     meta: [
@@ -29,9 +28,16 @@ export const Route = createFileRoute("/auth")({
 
 function AuthPage() {
   const [isLogin, setIsLogin] = useState(true);
+  const [showPassword, setShowPassword] = useState(false);
   const navigate = useNavigate();
   const router = useRouter();
   const queryClient = useQueryClient();
+  const auth = useAuth();
+
+  // Redirect to dashboard if already authenticated
+  if (auth.isAuthenticated && !auth.isLoading) {
+    void navigate({ to: "/" });
+  }
 
   const loginMutation = useMutation({
     mutationFn: (data: LoginRequest) => login(data),
@@ -40,6 +46,8 @@ function AuthPage() {
       await queryClient.invalidateQueries({ queryKey: userQueryKeys.me });
       // Invalidate the router so beforeLoad guards re-evaluate with fresh auth state
       await router.invalidate();
+      // Refetch auth context
+      auth.refetch();
       void navigate({ to: "/" });
     },
   });
@@ -52,6 +60,7 @@ function AuthPage() {
         await login({ email: variables.email, password: variables.password });
         await queryClient.invalidateQueries({ queryKey: userQueryKeys.me });
         await router.invalidate();
+        auth.refetch();
         void navigate({ to: "/" });
       } catch (error) {
         console.error("Auto-login after registration failed:", error);
@@ -69,13 +78,19 @@ function AuthPage() {
         password: formData.get("password") as string,
       });
     } else {
+      const fullName = formData.get("full_name") as string | null;
       registerMutation.mutate({
         username: formData.get("username") as string,
         email: formData.get("email") as string,
         password: formData.get("password") as string,
-        full_name: (formData.get("full_name") as string) || undefined,
+        full_name: fullName || undefined,
       });
     }
+  };
+
+  const handleToggle = () => {
+    setIsLogin(!isLogin);
+    setShowPassword(false);
   };
 
   const error = loginMutation.error || registerMutation.error;
@@ -111,6 +126,7 @@ function AuthPage() {
                     type="text"
                     required={!isLogin}
                     disabled={isLoading}
+                    autoComplete="username"
                     className="mt-1 block w-full rounded-md border border-input bg-background px-3 py-2 text-foreground placeholder:text-muted-foreground focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary disabled:opacity-50"
                     placeholder="username"
                   />
@@ -124,6 +140,7 @@ function AuthPage() {
                     name="full_name"
                     type="text"
                     disabled={isLoading}
+                    autoComplete="name"
                     className="mt-1 block w-full rounded-md border border-input bg-background px-3 py-2 text-foreground placeholder:text-muted-foreground focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary disabled:opacity-50"
                     placeholder="John Doe"
                   />
@@ -141,6 +158,7 @@ function AuthPage() {
                 type="email"
                 required
                 disabled={isLoading}
+                autoComplete={isLogin ? "email" : "email"}
                 className="mt-1 block w-full rounded-md border border-input bg-background px-3 py-2 text-foreground placeholder:text-muted-foreground focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary disabled:opacity-50"
                 placeholder="you@example.com"
               />
@@ -150,15 +168,31 @@ function AuthPage() {
               <label htmlFor="password" className="block text-sm font-medium text-foreground">
                 Password
               </label>
-              <input
-                id="password"
-                name="password"
-                type="password"
-                required
-                disabled={isLoading}
-                className="mt-1 block w-full rounded-md border border-input bg-background px-3 py-2 text-foreground placeholder:text-muted-foreground focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary disabled:opacity-50"
-                placeholder="••••••••"
-              />
+              <div className="relative mt-1">
+                <input
+                  id="password"
+                  name="password"
+                  type={showPassword ? "text" : "password"}
+                  required
+                  disabled={isLoading}
+                  autoComplete={isLogin ? "current-password" : "new-password"}
+                  className="block w-full rounded-md border border-input bg-background px-3 py-2 pr-10 text-foreground placeholder:text-muted-foreground focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary disabled:opacity-50"
+                  placeholder="••••••••"
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowPassword(!showPassword)}
+                  disabled={isLoading}
+                  aria-label={showPassword ? "Hide password" : "Show password"}
+                  className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground disabled:opacity-50"
+                >
+                  {showPassword ? (
+                    <EyeOff className="h-4 w-4" strokeWidth={1.6} />
+                  ) : (
+                    <Eye className="h-4 w-4" strokeWidth={1.6} />
+                  )}
+                </button>
+              </div>
             </div>
           </div>
 
@@ -179,11 +213,7 @@ function AuthPage() {
 
         {/* Toggle */}
         <div className="text-center text-sm">
-          <button
-            type="button"
-            onClick={() => setIsLogin(!isLogin)}
-            className="text-primary hover:underline"
-          >
+          <button type="button" onClick={handleToggle} className="text-primary hover:underline">
             {isLogin ? "Don't have an account? Sign up" : "Already have an account? Sign in"}
           </button>
         </div>

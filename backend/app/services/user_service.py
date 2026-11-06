@@ -3,7 +3,7 @@ from sqlalchemy.orm import Session
 from app.models.user import User
 from app.repositories.user_repository import UserRepository
 from app.schemas.user import UserCreate
-from app.core.security import hash_password, verify_password, create_access_token
+from app.core.security import hash_password, verify_password, create_access_token, needs_rehash
 
 class UserService:
     @staticmethod
@@ -14,8 +14,16 @@ class UserService:
         if not user:
             raise ValueError("Invalid email or password")
 
+        if not user.is_active:
+            raise ValueError("Invalid email or password")
+
         if not verify_password(password, user.password_hash):
             raise ValueError("Invalid email or password")
+
+        # Upgrade legacy bcrypt hashes to Argon2
+        if needs_rehash(user.password_hash):
+            user.password_hash = hash_password(password)
+            db.commit()
 
         token = create_access_token(
             {"sub": user.email}

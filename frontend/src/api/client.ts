@@ -12,19 +12,22 @@ export class ApiError extends Error {
 }
 
 /**
+ * Clear the JWT access token from localStorage
+ */
+function clearAccessToken() {
+  if (typeof window === "undefined") return;
+  window.localStorage.removeItem(ACCESS_TOKEN_KEY);
+  window.dispatchEvent(new Event("codepulse-auth-change"));
+}
+
+/**
  * Returns true when a JWT access token is present in localStorage.
  *
- * Server-side (SSR) the function intentionally returns `true` — the server has
- * no access to the browser's localStorage and therefore cannot determine auth
- * state.  Returning `false` on the server would cause every protected-route
- * `beforeLoad` guard to fire a redirect to `/auth` before the page reaches the
- * browser, even when the token is present.
- *
- * TanStack Router re-runs `beforeLoad` independently on the client after SSR
- * hydration, so unauthenticated users are still redirected correctly.
+ * Server-side (SSR) this returns `false` because the server cannot read localStorage.
+ * The actual authentication state is validated via the /users/me endpoint.
  */
 export function hasAccessToken() {
-  if (typeof window === "undefined") return true; // SSR: cannot read localStorage — let the client guard decide
+  if (typeof window === "undefined") return false;
   return Boolean(window.localStorage.getItem(ACCESS_TOKEN_KEY));
 }
 
@@ -62,6 +65,12 @@ export async function apiRequest<T>(path: string, init: RequestInit = {}): Promi
       typeof payload.detail === "string"
         ? payload.detail
         : "Unable to load dashboard data.";
+
+    // Clear invalid token on 401
+    if (response.status === 401) {
+      clearAccessToken();
+    }
+
     throw new ApiError(detail, response.status);
   }
 

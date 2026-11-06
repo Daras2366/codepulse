@@ -1,22 +1,10 @@
 import { createFileRoute, redirect } from "@tanstack/react-router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import {
-  AlertCircle,
-  Bot,
-  BrainCircuit,
-  Loader2,
-  RefreshCw,
-  RotateCcw,
-  Send,
-} from "lucide-react";
+import { AlertCircle, Bot, BrainCircuit, Loader2, RefreshCw, RotateCcw, Send } from "lucide-react";
 import * as React from "react";
 
 import { hasAccessToken } from "@/api/client";
-import {
-  chatWithCoach,
-  getRecommendations,
-  type Recommendation,
-} from "@/api/recommendations";
+import { chatWithCoach, getRecommendations, type Recommendation } from "@/api/recommendations";
 import { getPerformanceProfile } from "@/api/analytics";
 
 import { AppShell } from "@/components/layout/AppShell";
@@ -29,7 +17,9 @@ const description =
 
 export const Route = createFileRoute("/ai-coach")({
   beforeLoad: () => {
-    if (!hasAccessToken()) {
+    // During SSR, we can't check localStorage, so don't redirect
+    // The component will handle redirecting unauthenticated users
+    if (typeof window !== "undefined" && !hasAccessToken()) {
       throw redirect({ to: "/auth" });
     }
   },
@@ -87,8 +77,7 @@ function WeaknessItem({
       <div>
         <p className="text-card-title">{description}</p>
         <p className="text-caption mt-1 text-subtle">
-          {supporting_metric}: <strong>{metric_value}</strong> · Confidence:{" "}
-          {confidence}
+          {supporting_metric}: <strong>{metric_value}</strong> · Confidence: {confidence}
         </p>
       </div>
     </li>
@@ -153,10 +142,7 @@ function AICoach() {
     setPendingUserMessage(null);
     chatMutation.reset();
 
-    const nextHistory: ChatMsg[] = [
-      ...conversationHistory,
-      { role: "user", content: text },
-    ];
+    const nextHistory: ChatMsg[] = [...conversationHistory, { role: "user", content: text }];
     setConversationHistory(nextHistory);
 
     chatMutation.mutate(
@@ -255,14 +241,14 @@ function AICoach() {
             caption="Sync your platforms to get personalized recommendations"
           >
             <p className="text-body text-muted-foreground">
-              We need more of your practice data to generate meaningful recommendations.
-              Please sync your Codeforces or LeetCode profile to get started.
+              We need more of your practice data to generate meaningful recommendations. Please sync
+              your Codeforces or LeetCode profile to get started.
             </p>
           </Panel>
         ) : (
           <>
             {/* Data quality notice */}
-            {dataQuality && (
+            {dataQuality &&
               (!dataQuality.has_topic_data ||
                 !dataQuality.has_contest_data ||
                 dataQuality.locally_tagged_solved < dataQuality.profile_reported_solved) && (
@@ -273,8 +259,7 @@ function AICoach() {
                   {dataQuality.locally_tagged_solved < dataQuality.profile_reported_solved &&
                     ` Only ${dataQuality.locally_tagged_solved} of ${dataQuality.profile_reported_solved} solved problems have topic tags.`}
                 </div>
-              )
-            )}
+              )}
 
             {/* Recommendations */}
             <Panel
@@ -293,8 +278,8 @@ function AICoach() {
             >
               {recommendations.length === 0 ? (
                 <p className="text-body text-muted-foreground">
-                  No recommendations available at this time. Keep practicing to get
-                  personalized suggestions!
+                  No recommendations available at this time. Keep practicing to get personalized
+                  suggestions!
                 </p>
               ) : (
                 <ul className="space-y-4">
@@ -317,9 +302,7 @@ function AICoach() {
                             >
                               {rec.priority.toUpperCase()}
                             </span>
-                            <span className="text-label text-subtle uppercase">
-                              {rec.category}
-                            </span>
+                            <span className="text-label text-subtle uppercase">{rec.category}</span>
                           </div>
                           <p className="text-card-title">{rec.title}</p>
                           <p className="text-body mt-2 text-muted-foreground">{rec.reason}</p>
@@ -475,8 +458,8 @@ function AICoach() {
                 {chatMutation.data?.is_configured === false && (
                   <p className="text-caption text-subtle rounded-2xl bg-muted/50 p-3">
                     AI Coach is not configured. Set{" "}
-                    <code className="font-mono">GEMINI_API_KEY</code> in the backend
-                    environment to enable chat.
+                    <code className="font-mono">GEMINI_API_KEY</code> in the backend environment to
+                    enable chat.
                   </p>
                 )}
 
