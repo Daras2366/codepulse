@@ -623,7 +623,7 @@ class TestRecommendationAgent:
         """When GEMINI_API_KEY is None, recommend() returns an error result immediately."""
         with patch("app.services.recommendation_agent.settings") as mock_settings:
             mock_settings.GEMINI_API_KEY = None
-            mock_settings.GEMINI_MODEL = "gemini-2.0-flash"
+            mock_settings.GEMINI_MODEL = "gemini-3.5-flash"
             mock_settings.GEMINI_TIMEOUT_SECONDS = 30
             with patch("app.services.recommendation_agent.genai.Client") as mock_cls:
                 mock_cls.return_value = MagicMock()
@@ -670,7 +670,7 @@ class TestRecommendationAgent:
 
         with patch("app.services.recommendation_agent.settings") as mock_settings:
             mock_settings.GEMINI_API_KEY = "fake-key"
-            mock_settings.GEMINI_MODEL = "gemini-2.0-flash"
+            mock_settings.GEMINI_MODEL = "gemini-3.5-flash"
             mock_settings.GEMINI_TIMEOUT_SECONDS = 30
             with patch("app.services.recommendation_agent.genai.Client") as mock_cls:
                 mock_cls.return_value = mock_client
@@ -703,7 +703,7 @@ class TestRecommendationAgent:
 
         with patch("app.services.recommendation_agent.settings") as mock_settings:
             mock_settings.GEMINI_API_KEY = "fake-key"
-            mock_settings.GEMINI_MODEL = "gemini-2.0-flash"
+            mock_settings.GEMINI_MODEL = "gemini-3.5-flash"
             mock_settings.GEMINI_TIMEOUT_SECONDS = 30
             with patch("app.services.recommendation_agent.genai.Client") as mock_cls:
                 mock_cls.return_value = mock_client
@@ -722,7 +722,7 @@ class TestRecommendationAgent:
 
         with patch("app.services.recommendation_agent.settings") as mock_settings:
             mock_settings.GEMINI_API_KEY = "fake-key"
-            mock_settings.GEMINI_MODEL = "gemini-2.0-flash"
+            mock_settings.GEMINI_MODEL = "gemini-3.5-flash"
             mock_settings.GEMINI_TIMEOUT_SECONDS = 30
             with patch("app.services.recommendation_agent.genai.Client") as mock_cls:
                 mock_cls.return_value = mock_client
@@ -739,7 +739,7 @@ class TestRecommendationAgent:
 
         with patch("app.services.recommendation_agent.settings") as mock_settings:
             mock_settings.GEMINI_API_KEY = "fake-key"
-            mock_settings.GEMINI_MODEL = "gemini-2.0-flash"
+            mock_settings.GEMINI_MODEL = "gemini-3.5-flash"
             mock_settings.GEMINI_TIMEOUT_SECONDS = 30
             with patch("app.services.recommendation_agent.genai.Client") as mock_cls:
                 mock_cls.return_value = mock_client
@@ -771,7 +771,7 @@ class TestRecommendationAgent:
 
         with patch("app.services.recommendation_agent.settings") as mock_settings:
             mock_settings.GEMINI_API_KEY = "fake-key"
-            mock_settings.GEMINI_MODEL = "gemini-2.0-flash"
+            mock_settings.GEMINI_MODEL = "gemini-3.5-flash"
             mock_settings.GEMINI_TIMEOUT_SECONDS = 30
             with patch("app.services.recommendation_agent.genai.Client") as mock_cls:
                 mock_cls.return_value = mock_client
@@ -808,7 +808,7 @@ class TestRecommendationAgent:
 
         with patch("app.services.recommendation_agent.settings") as mock_settings:
             mock_settings.GEMINI_API_KEY = "fake-key"
-            mock_settings.GEMINI_MODEL = "gemini-2.0-flash"
+            mock_settings.GEMINI_MODEL = "gemini-3.5-flash"
             mock_settings.GEMINI_TIMEOUT_SECONDS = 30
             with patch("app.services.recommendation_agent.genai.Client") as mock_cls:
                 mock_cls.return_value = mock_client
@@ -816,6 +816,75 @@ class TestRecommendationAgent:
                 result = agent.recommend()
 
         assert len(result.recommendations) <= 5
+
+    def test_hallucinated_and_solved_recommendations_are_dropped(
+        self, db, test_user, problems, solved_submission
+    ):
+        """Final JSON is verified against the DB: unknown IDs, already-solved
+        problems, and model-invented fields must never reach the client."""
+        real_unsolved = problems[3]  # "Winner" — never attempted by test_user
+        solved = problems[0]         # ACCEPTED via solved_submission
+
+        valid_json = json.dumps({
+            "recommendations": [
+                {
+                    "problem_id": 999999,  # not in catalog
+                    "title": "Invented Problem",
+                    "platform": "leetcode",
+                    "difficulty": "Easy",
+                    "url": "https://leetcode.com/problems/invented/",
+                    "topics": ["Fake"],
+                    "reason": "Hallucinated.",
+                    "priority": 1,
+                    "likely_unsolved": True,
+                },
+                {
+                    "problem_id": solved.id,  # already ACCEPTED by test_user
+                    "title": solved.title,
+                    "platform": "codeforces",
+                    "difficulty": "Easy",
+                    "url": solved.problem_url,
+                    "topics": [],
+                    "reason": "Should be dropped.",
+                    "priority": 2,
+                    "likely_unsolved": True,
+                },
+                {
+                    "problem_id": real_unsolved.id,
+                    "title": "Model Made This Up",
+                    "platform": "leetcode",
+                    "difficulty": "Hard",
+                    "url": "https://evil.example.com/x",
+                    "topics": ["Invented"],
+                    "reason": "Real problem, fake metadata.",
+                    "priority": 3,
+                    "likely_unsolved": True,
+                },
+            ],
+            "reasoning": "Mixed bag.",
+            "has_sufficient_data": True,
+        })
+
+        mock_client = MagicMock()
+        mock_client.models.generate_content.return_value = _make_text_response(valid_json)
+
+        with patch("app.services.recommendation_agent.settings") as mock_settings:
+            mock_settings.GEMINI_API_KEY = "fake-key"
+            mock_settings.GEMINI_MODEL = "gemini-3.5-flash"
+            mock_settings.GEMINI_TIMEOUT_SECONDS = 30
+            with patch("app.services.recommendation_agent.genai.Client") as mock_cls:
+                mock_cls.return_value = mock_client
+                agent = RecommendationAgent(db, test_user.id)
+                result = agent.recommend()
+
+        assert len(result.recommendations) == 1
+        rec = result.recommendations[0]
+        assert rec.problem_id == real_unsolved.id
+        # Fields overwritten with DB truth — model's fake values discarded.
+        assert rec.title == real_unsolved.title
+        assert rec.url == real_unsolved.problem_url
+        assert rec.platform == "codeforces"
+        assert rec.difficulty == "Easy"
 
 
 # ---------------------------------------------------------------------------

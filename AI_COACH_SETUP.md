@@ -49,7 +49,7 @@ Add these to your backend environment (`.env` file in the `backend/` directory):
 # Gemini AI Coach Configuration
 # Get your API key from: https://makersuite.google.com/app/apikey
 GEMINI_API_KEY=your-gemini-api-key-here
-GEMINI_MODEL=gemini-1.5-flash
+GEMINI_MODEL=gemini-3.5-flash
 ```
 
 ### How to Get a Gemini API Key
@@ -62,8 +62,9 @@ GEMINI_MODEL=gemini-1.5-flash
 
 ### Available Models
 
-- `gemini-1.5-flash` - Fast, cost-effective (recommended for chat)
-- `gemini-1.5-pro` - Higher quality, slower, more expensive
+- `gemini-3.5-flash` - Fast, cost-effective (default; verified 2026-11)
+- `gemini-3.8-flash` - Newest, but intermittently slow (>30s) — override GEMINI_MODEL to try it
+- `gemini-3.7-flash` / `gemini-3.6-flash` - Other current flash models
 
 ## Starting the Project
 
@@ -116,6 +117,7 @@ npm run dev
 Returns personalized recommendations based on performance analysis.
 
 **Response:**
+
 ```json
 {
   "recommendations": [
@@ -147,17 +149,19 @@ Returns personalized recommendations based on performance analysis.
 Chat with the AI Coach about your performance.
 
 **Request:**
+
 ```json
 {
   "message": "What should I practice today?",
   "conversation_history": [
-    {"role": "user", "content": "How has my performance changed?"},
-    {"role": "assistant", "content": "Your rating has been improving..."}
+    { "role": "user", "content": "How has my performance changed?" },
+    { "role": "assistant", "content": "Your rating has been improving..." }
   ]
 }
 ```
 
 **Response:**
+
 ```json
 {
   "response": "Based on your performance data, I recommend focusing on...",
@@ -168,21 +172,25 @@ Chat with the AI Coach about your performance.
 ## Limitations and Known Issues
 
 ### API Key Not Configured
+
 - Chat functionality will be disabled
 - Recommendations will still work (deterministic, no LLM required)
 - Clear error message shown to user
 
 ### Insufficient Data
+
 - If user has no synced platforms or very little activity
 - Shows "Insufficient Data" state with guidance to sync platforms
 - No fake data or fabricated statistics
 
 ### Provider Quota
+
 - Gemini API has free tier limits
 - If quota exhausted, chat returns 503 error
 - User sees "AI Coach unavailable" message
 
 ### Conversation History
+
 - Limited to 10 messages per request
 - Limited to 1000 characters per message
 - Not persisted (session-only for MVP)
@@ -228,21 +236,25 @@ npm run build
 ## Troubleshooting
 
 ### "AI Coach is not configured"
+
 - Add `GEMINI_API_KEY` to backend `.env`
 - Restart backend server
 - Refresh the page
 
 ### "Insufficient Data"
+
 - Sync at least one platform (Codeforces or LeetCode)
 - Solve some problems to generate meaningful recommendations
 - Refresh the AI Coach page
 
 ### Chat returns 503 error
+
 - Check Gemini API key is valid
 - Check API quota (free tier limits)
 - Check network connectivity to Google API
 
 ### Recommendations seem incorrect
+
 - Verify platform sync is up to date
 - Check that problems have topic tags (for topic recommendations)
 - Ensure sufficient historical data (30+ problems recommended)

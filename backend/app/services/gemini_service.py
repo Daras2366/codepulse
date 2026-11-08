@@ -94,7 +94,10 @@ class GeminiService:
                     model=self._model,
                     input=input_text,
                     system_instruction=system_instruction,
-                    config={
+                    # NOTE: interactions.create() takes generation_config=,
+                    # NOT config= — passing config raises TypeError before
+                    # the request ever reaches the API.
+                    generation_config={
                         "temperature": 0.7,
                         "max_output_tokens": 1000,
                         "top_p": 0.9,
@@ -157,7 +160,13 @@ class GeminiService:
             raise
 
         except Exception as exc:
-            logger.error("GeminiService: unexpected error type=%s", type(exc).__name__)
+            # logger.exception attaches the full traceback — type name alone
+            # hides the real failure (e.g. SDK argument errors).
+            logger.exception(
+                "GeminiService: unexpected error type=%s: %s",
+                type(exc).__name__,
+                exc,
+            )
             raise GeminiProviderError(
                 "An unexpected error occurred in the AI Coach. Please try again.",
                 is_retryable=False,

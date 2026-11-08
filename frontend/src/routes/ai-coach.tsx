@@ -1,6 +1,16 @@
 import { createFileRoute, redirect } from "@tanstack/react-router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { AlertCircle, Bot, BrainCircuit, ExternalLink, Loader2, RefreshCw, RotateCcw, Send, Sparkles } from "lucide-react";
+import {
+  AlertCircle,
+  Bot,
+  BrainCircuit,
+  ExternalLink,
+  Loader2,
+  RefreshCw,
+  RotateCcw,
+  Send,
+  Sparkles,
+} from "lucide-react";
 import * as React from "react";
 
 import { hasAccessToken } from "@/api/client";
@@ -359,7 +369,8 @@ function AICoach() {
               {!agentFetchEnabled && !agentData ? (
                 <div className="flex flex-col items-center gap-4 py-6">
                   <p className="text-body text-muted-foreground text-center max-w-md">
-                    Let Gemini analyse your profile and find specific problems you should solve next — pulled from your actual problem catalog.
+                    Let Gemini analyse your profile and find specific problems you should solve next
+                    — pulled from your actual problem catalog.
                   </p>
                   <button
                     onClick={() => setAgentFetchEnabled(true)}
@@ -394,13 +405,31 @@ function AICoach() {
                 <div className="rounded-2xl bg-muted/50 p-4">
                   <p className="text-body text-muted-foreground">
                     AI recommendations are not configured. Set{" "}
-                    <code className="font-mono">GEMINI_API_KEY</code> in the backend environment to enable this feature.
+                    <code className="font-mono">GEMINI_API_KEY</code> in the backend environment to
+                    enable this feature.
                   </p>
                 </div>
-              ) : agentData && !agentData.has_sufficient_data && agentData.recommendations.length === 0 ? (
+              ) : agentData && agentData.error && agentData.recommendations.length === 0 ? (
+                <div className="flex flex-col items-center gap-4 py-6">
+                  <AlertCircle className="h-7 w-7 text-pink" />
+                  <p className="text-body text-muted-foreground text-center max-w-md">
+                    AI recommendations failed: {agentData.error}
+                  </p>
+                  <button
+                    onClick={() => refetchAgent()}
+                    className="flex items-center gap-2 rounded-2xl bg-violet px-4 py-2 text-caption font-medium text-white transition-colors hover:bg-violet/90"
+                  >
+                    <RefreshCw className="h-4 w-4" />
+                    Retry
+                  </button>
+                </div>
+              ) : agentData &&
+                !agentData.has_sufficient_data &&
+                agentData.recommendations.length === 0 ? (
                 <div className="rounded-2xl bg-muted/50 p-4">
                   <p className="text-body text-muted-foreground">
-                    Not enough practice data to generate meaningful recommendations yet. Sync more submissions to get started.
+                    Not enough practice data to generate meaningful recommendations yet. Sync more
+                    submissions to get started.
                   </p>
                   {agentData.error && (
                     <p className="text-caption text-pink mt-2">{agentData.error}</p>
@@ -410,7 +439,9 @@ function AICoach() {
                 <div className="space-y-4">
                   {agentData.catalog_limited && (
                     <div className="rounded-2xl border border-yellow-soft bg-yellow-soft/20 px-4 py-3 text-caption text-yellow-700">
-                      <strong>Catalog note:</strong> The problem catalog is limited to problems synced from your submission history. Sync more submissions to expand the catalog.
+                      <strong>Catalog note:</strong> The problem catalog is limited to problems
+                      synced from your submission history. Sync more submissions to expand the
+                      catalog.
                     </div>
                   )}
 
@@ -439,28 +470,34 @@ function AICoach() {
                                   #{rec.priority}
                                 </span>
                                 {/* Platform badge */}
-                                <span className={`text-label rounded-full px-2 py-0.5 text-xs font-medium ${
-                                  rec.platform === "leetcode"
-                                    ? "bg-yellow-soft text-yellow-700"
-                                    : "bg-blue-100 text-blue-700"
-                                }`}>
+                                <span
+                                  className={`text-label rounded-full px-2 py-0.5 text-xs font-medium ${
+                                    rec.platform === "leetcode"
+                                      ? "bg-yellow-soft text-yellow-700"
+                                      : "bg-blue-100 text-blue-700"
+                                  }`}
+                                >
                                   {rec.platform}
                                 </span>
                                 {/* Difficulty badge */}
                                 {rec.difficulty && (
-                                  <span className={`text-label rounded-full px-2 py-0.5 text-xs font-medium ${
-                                    rec.difficulty === "Easy"
-                                      ? "bg-green-soft text-green"
-                                      : rec.difficulty === "Medium"
-                                        ? "bg-yellow-soft text-yellow"
-                                        : "bg-pink-soft text-pink"
-                                  }`}>
+                                  <span
+                                    className={`text-label rounded-full px-2 py-0.5 text-xs font-medium ${
+                                      rec.difficulty === "Easy"
+                                        ? "bg-green-soft text-green"
+                                        : rec.difficulty === "Medium"
+                                          ? "bg-yellow-soft text-yellow"
+                                          : "bg-pink-soft text-pink"
+                                    }`}
+                                  >
                                     {rec.difficulty}
                                   </span>
                                 )}
                                 {/* Solve status */}
                                 <span className="text-label text-xs text-subtle">
-                                  {rec.likely_unsolved ? "Likely unsolved" : "Solve status uncertain"}
+                                  {rec.likely_unsolved
+                                    ? "Likely unsolved"
+                                    : "Solve status uncertain"}
                                 </span>
                               </div>
 
@@ -504,7 +541,8 @@ function AICoach() {
 
                   <div className="flex items-center justify-between">
                     <p className="text-caption text-subtle">
-                      {agentData.tool_calls_made.length} tool call{agentData.tool_calls_made.length !== 1 ? "s" : ""} made
+                      {agentData.tool_calls_made.length} tool call
+                      {agentData.tool_calls_made.length !== 1 ? "s" : ""} made
                     </p>
                     <button
                       onClick={() => refetchAgent()}

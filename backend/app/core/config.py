@@ -26,10 +26,15 @@ class Settings(BaseSettings):
     # API key for Google Gemini (used for AI Coach features)
     # Get your key from: https://aistudio.google.com/app/apikey
     GEMINI_API_KEY: str | None = None
-    # Model to use — default is the current stable fast model.
-    # Supported: gemini-2.0-flash, gemini-2.0-flash-lite, gemini-1.5-pro
-    # Do not use invented model names. Verify at: https://ai.google.dev/gemini-api/docs/models
-    GEMINI_MODEL: str = "gemini-2.0-flash"
+    # Model to use — default is a currently supported fast model.
+    # Verified against the live Gemini API on 2026-11-08:
+    #   gemini-3.5-flash  — works with both generate_content (agent, function
+    #                       calling) and interactions.create (chat), ~2-3s.
+    #   gemini-3.8-flash  — listed but intermittently exceeds the 30s timeout.
+    #   gemini-2.5-flash  — 404 for this API key ("no longer available").
+    # Override with GEMINI_MODEL in .env. Verify at:
+    # https://ai.google.dev/gemini-api/docs/models
+    GEMINI_MODEL: str = "gemini-3.5-flash"
     # Request timeout in seconds for Gemini API calls
     GEMINI_TIMEOUT_SECONDS: int = 30
 

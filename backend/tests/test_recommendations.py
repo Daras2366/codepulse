@@ -328,7 +328,7 @@ def _make_gemini_service(api_key: str | None, mock_client=None) -> GeminiService
     """Helper: build a GeminiService with patched settings and optional mock client."""
     with patch("app.services.gemini_service.settings") as mock_settings:
         mock_settings.GEMINI_API_KEY = api_key
-        mock_settings.GEMINI_MODEL = "gemini-2.0-flash"
+        mock_settings.GEMINI_MODEL = "gemini-3.5-flash"
         mock_settings.GEMINI_TIMEOUT_SECONDS = 30
         if api_key is None:
             svc = GeminiService()
@@ -540,6 +540,33 @@ class TestGeminiService:
         system_instr = captured_kwargs.get("system_instruction", "")
         assert "TRUSTED_PERF_DATA_MARKER" in system_instr
         assert "TRUSTED_RECS_DATA_MARKER" in system_instr
+
+    def test_uses_generation_config_not_config_kwarg(self):
+        """Regression: interactions.create() raises TypeError on config=.
+
+        The SDK only accepts generation_config= (or extra_body=). Passing
+        config= fails client-side before the request reaches the API, which
+        was the root cause of the chat 502s.
+        """
+        captured: dict = {}
+
+        def capture_create(**kwargs):
+            captured.update(kwargs)
+            result = MagicMock()
+            result.output_text = "ok"
+            return result
+
+        mock_client = MagicMock()
+        mock_client.interactions.create.side_effect = capture_create
+
+        svc = _make_gemini_service(api_key="fake-key", mock_client=mock_client)
+        _run(svc.generate_coach_response("hello", "perf", "recs"))
+
+        assert "config" not in captured, (
+            "config= is rejected by interactions.create() — use generation_config="
+        )
+        assert "generation_config" in captured
+        assert captured["generation_config"]["temperature"] == 0.7
 
     def test_store_false_is_set(self):
         """store=False must be passed to prevent server-side data retention."""
