@@ -3,11 +3,13 @@
 Provides endpoints for:
 - Personalized recommendations based on performance analysis
 - AI Coach chat interface powered by Gemini
+- AI Agent problem recommendations using Gemini function calling
 """
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, field_validator, model_validator
 from sqlalchemy.orm import Session
+from typing import Optional
 
 from app.core.deps import get_current_user
 from app.core.database import get_db
@@ -22,6 +24,10 @@ from app.services.gemini_service import (
     GeminiService,
     GeminiNotConfiguredError,
     GeminiProviderError,
+)
+from app.services.recommendation_agent import (
+    RecommendationAgent,
+    AgentRecommendationResult,
 )
 
 router = APIRouter()
@@ -314,3 +320,114 @@ def _build_recommendations_summary(recommendations: list) -> str:
         lines.append(f"   Action: {rec.suggested_activity}")
 
     return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# AI Agent recommendation schemas
+# ---------------------------------------------------------------------------
+
+
+class AgentProblemRecommendation(BaseModel):
+    """A single problem recommendation from the AI agent."""
+
+    problem_id: Optional[int] = None
+    title: str
+    platform: str
+    difficulty: Optional[str] = None
+    url: str
+    topics: list[str]
+    reason: str
+    priority: int
+    likely_unsolved: bool
+
+
+class AgentRecommendationResponse(BaseModel):
+    """Response schema for the AI agent recommendation endpoint."""
+
+    recommendations: list[AgentProblemRecommendation]
+    agent_reasoning: str
+    has_sufficient_data: bool
+    catalog_limited: bool
+    is_configured: bool
+    tool_calls_made: list[str]
+    error: Optional[str] = None
+
+
+# ---------------------------------------------------------------------------
+# AI Agent recommendation endpoint
+# ---------------------------------------------------------------------------
+
+
+@router.post("/ai-coach/recommend", response_model=AgentRecommendationResponse)
+def get_agent_recommendations(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> AgentRecommendationResponse:
+    """Get AI-powered problem recommendations using Gemini function calling.
+
+    The agent analyses the authenticated user's performance profile and
+    searches the problem catalog for real, unsolved practice problems.
+
+    The user identity is ALWAYS derived from the authenticated JWT — the
+    agent loop never accepts user_id from model-generated arguments.
+
+    Returns a structured response with up to 5 problem recommendations,
+    the agent's reasoning, and observability metadata (tool calls made).
+    """
+    agent = RecommendationAgent(db, user_id=current_user.id)
+
+    if not agent.is_configured():
+        return AgentRecommendationResponse(
+            recommendations=[],
+            agent_reasoning="",
+            has_sufficient_data=False,
+            catalog_limited=False,
+            is_configured=False,
+            tool_calls_made=[],
+            error=(
+                "AI recommendations are not configured. "
+                "Please set GEMINI_API_KEY in the backend environment."
+            ),
+        )
+
+    try:
+        result: AgentRecommendationResult = agent.recommend()
+
+        # Check for timeout-style errors
+        if result.error and "timed out" in result.error.lower():
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail=result.error,
+            )
+
+        return AgentRecommendationResponse(
+            recommendations=[
+                AgentProblemRecommendation(
+                    problem_id=rec.problem_id,
+                    title=rec.title,
+                    platform=rec.platform,
+                    difficulty=rec.difficulty,
+                    url=rec.url,
+                    topics=rec.topics,
+                    reason=rec.reason,
+                    priority=rec.priority,
+                    likely_unsolved=rec.likely_unsolved,
+                )
+                for rec in result.recommendations
+            ],
+            agent_reasoning=result.agent_reasoning,
+            has_sufficient_data=result.has_sufficient_data,
+            catalog_limited=result.catalog_limited,
+            is_configured=True,
+            tool_calls_made=result.tool_calls_made,
+            error=result.error,
+        )
+
+    except HTTPException:
+        raise
+
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"AI recommendation agent error: {type(exc).__name__}",
+        ) from exc

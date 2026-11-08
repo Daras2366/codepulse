@@ -1,10 +1,16 @@
 import { createFileRoute, redirect } from "@tanstack/react-router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { AlertCircle, Bot, BrainCircuit, Loader2, RefreshCw, RotateCcw, Send } from "lucide-react";
+import { AlertCircle, Bot, BrainCircuit, ExternalLink, Loader2, RefreshCw, RotateCcw, Send, Sparkles } from "lucide-react";
 import * as React from "react";
 
 import { hasAccessToken } from "@/api/client";
-import { chatWithCoach, getRecommendations, type Recommendation } from "@/api/recommendations";
+import {
+  chatWithCoach,
+  getAgentRecommendations,
+  getRecommendations,
+  type AgentRecommendationResponse,
+  type Recommendation,
+} from "@/api/recommendations";
 import { getPerformanceProfile } from "@/api/analytics";
 
 import { AppShell } from "@/components/layout/AppShell";
@@ -117,6 +123,20 @@ function AICoach() {
 
   const chatMutation = useMutation({
     mutationFn: chatWithCoach,
+  });
+
+  const [agentFetchEnabled, setAgentFetchEnabled] = React.useState(false);
+
+  const {
+    data: agentData,
+    isLoading: agentLoading,
+    error: agentError,
+    refetch: refetchAgent,
+  } = useQuery({
+    queryKey: ["agent-recommendations"],
+    queryFn: getAgentRecommendations,
+    enabled: agentFetchEnabled,
+    retry: false,
   });
 
   const [message, setMessage] = React.useState("");
@@ -318,6 +338,184 @@ function AICoach() {
                   ))}
                 </ul>
               )}
+            </Panel>
+
+            {/* AI Problem Recommendations — lazy, only fetched when user clicks */}
+            <Panel
+              title="AI Problem Recommendations"
+              caption="Powered by Gemini — searches your problem catalog for real, unsolved problems"
+              action={
+                agentData && (
+                  <button
+                    onClick={() => refetchAgent()}
+                    className="flex h-9 w-9 items-center justify-center rounded-full bg-violet-soft text-violet transition-colors hover:bg-violet-soft/80"
+                    title="Reconsider recommendations"
+                  >
+                    <RefreshCw className="h-4 w-4" strokeWidth={1.6} />
+                  </button>
+                )
+              }
+            >
+              {!agentFetchEnabled && !agentData ? (
+                <div className="flex flex-col items-center gap-4 py-6">
+                  <p className="text-body text-muted-foreground text-center max-w-md">
+                    Let Gemini analyse your profile and find specific problems you should solve next — pulled from your actual problem catalog.
+                  </p>
+                  <button
+                    onClick={() => setAgentFetchEnabled(true)}
+                    className="flex items-center gap-2 rounded-2xl bg-violet px-5 py-2.5 text-caption font-medium text-white transition-colors hover:bg-violet/90"
+                  >
+                    <Sparkles className="h-4 w-4" />
+                    Get AI Recommendations
+                  </button>
+                </div>
+              ) : agentLoading ? (
+                <div className="flex flex-col items-center gap-3 py-8">
+                  <Loader2 className="h-7 w-7 animate-spin text-violet" />
+                  <p className="text-body text-muted-foreground text-center">
+                    AI agent is analysing your profile and searching for problems…
+                  </p>
+                </div>
+              ) : agentError ? (
+                <div className="flex flex-col items-center gap-4 py-6">
+                  <AlertCircle className="h-7 w-7 text-pink" />
+                  <p className="text-body text-muted-foreground">
+                    Failed to get AI recommendations. Please try again.
+                  </p>
+                  <button
+                    onClick={() => refetchAgent()}
+                    className="flex items-center gap-2 rounded-2xl bg-violet px-4 py-2 text-caption font-medium text-white transition-colors hover:bg-violet/90"
+                  >
+                    <RefreshCw className="h-4 w-4" />
+                    Retry
+                  </button>
+                </div>
+              ) : agentData && !agentData.is_configured ? (
+                <div className="rounded-2xl bg-muted/50 p-4">
+                  <p className="text-body text-muted-foreground">
+                    AI recommendations are not configured. Set{" "}
+                    <code className="font-mono">GEMINI_API_KEY</code> in the backend environment to enable this feature.
+                  </p>
+                </div>
+              ) : agentData && !agentData.has_sufficient_data && agentData.recommendations.length === 0 ? (
+                <div className="rounded-2xl bg-muted/50 p-4">
+                  <p className="text-body text-muted-foreground">
+                    Not enough practice data to generate meaningful recommendations yet. Sync more submissions to get started.
+                  </p>
+                  {agentData.error && (
+                    <p className="text-caption text-pink mt-2">{agentData.error}</p>
+                  )}
+                </div>
+              ) : agentData ? (
+                <div className="space-y-4">
+                  {agentData.catalog_limited && (
+                    <div className="rounded-2xl border border-yellow-soft bg-yellow-soft/20 px-4 py-3 text-caption text-yellow-700">
+                      <strong>Catalog note:</strong> The problem catalog is limited to problems synced from your submission history. Sync more submissions to expand the catalog.
+                    </div>
+                  )}
+
+                  {agentData.agent_reasoning && (
+                    <div className="rounded-2xl bg-violet-soft/30 px-4 py-3">
+                      <p className="text-caption text-subtle">{agentData.agent_reasoning}</p>
+                    </div>
+                  )}
+
+                  {agentData.recommendations.length === 0 ? (
+                    <p className="text-body text-muted-foreground">
+                      No candidate problems found in the catalog. Try syncing more submissions.
+                    </p>
+                  ) : (
+                    <ul className="space-y-4">
+                      {agentData.recommendations.slice(0, 5).map((rec, index) => (
+                        <li
+                          key={index}
+                          className="lift group rounded-2xl border border-border bg-muted/50 p-5"
+                        >
+                          <div className="flex items-start justify-between gap-3">
+                            <div className="flex-1 min-w-0">
+                              <div className="mb-2 flex flex-wrap items-center gap-2">
+                                {/* Priority badge */}
+                                <span className="text-label rounded-full bg-violet-soft px-2 py-0.5 text-xs font-medium text-violet">
+                                  #{rec.priority}
+                                </span>
+                                {/* Platform badge */}
+                                <span className={`text-label rounded-full px-2 py-0.5 text-xs font-medium ${
+                                  rec.platform === "leetcode"
+                                    ? "bg-yellow-soft text-yellow-700"
+                                    : "bg-blue-100 text-blue-700"
+                                }`}>
+                                  {rec.platform}
+                                </span>
+                                {/* Difficulty badge */}
+                                {rec.difficulty && (
+                                  <span className={`text-label rounded-full px-2 py-0.5 text-xs font-medium ${
+                                    rec.difficulty === "Easy"
+                                      ? "bg-green-soft text-green"
+                                      : rec.difficulty === "Medium"
+                                        ? "bg-yellow-soft text-yellow"
+                                        : "bg-pink-soft text-pink"
+                                  }`}>
+                                    {rec.difficulty}
+                                  </span>
+                                )}
+                                {/* Solve status */}
+                                <span className="text-label text-xs text-subtle">
+                                  {rec.likely_unsolved ? "Likely unsolved" : "Solve status uncertain"}
+                                </span>
+                              </div>
+
+                              {/* Title linked to problem URL */}
+                              <a
+                                href={rec.url}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="text-card-title hover:text-violet transition-colors flex items-center gap-1 group/link"
+                              >
+                                {rec.title}
+                                <ExternalLink className="h-3.5 w-3.5 opacity-0 group-hover/link:opacity-100 transition-opacity shrink-0" />
+                              </a>
+
+                              {/* Topics */}
+                              {rec.topics.length > 0 && (
+                                <div className="mt-2 flex flex-wrap gap-1.5">
+                                  {rec.topics.slice(0, 5).map((topic) => (
+                                    <span
+                                      key={topic}
+                                      className="rounded-full bg-muted px-2 py-0.5 text-xs text-subtle"
+                                    >
+                                      {topic}
+                                    </span>
+                                  ))}
+                                </div>
+                              )}
+
+                              {/* Agent reason */}
+                              <p className="text-body mt-3 text-muted-foreground">{rec.reason}</p>
+                            </div>
+                          </div>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+
+                  {agentData.error && (
+                    <p className="text-caption text-subtle mt-2">Note: {agentData.error}</p>
+                  )}
+
+                  <div className="flex items-center justify-between">
+                    <p className="text-caption text-subtle">
+                      {agentData.tool_calls_made.length} tool call{agentData.tool_calls_made.length !== 1 ? "s" : ""} made
+                    </p>
+                    <button
+                      onClick={() => refetchAgent()}
+                      className="flex items-center gap-2 rounded-2xl border border-border px-4 py-2 text-caption font-medium text-subtle transition-colors hover:bg-muted"
+                    >
+                      <RefreshCw className="h-3.5 w-3.5" />
+                      Reconsider
+                    </button>
+                  </div>
+                </div>
+              ) : null}
             </Panel>
 
             {/* Strengths and Weaknesses */}

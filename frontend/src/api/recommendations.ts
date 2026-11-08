@@ -46,3 +46,36 @@ export async function chatWithCoach(request: ChatRequest) {
     body: JSON.stringify(request),
   });
 }
+
+// ---------------------------------------------------------------------------
+// AI Agent recommendation types
+// ---------------------------------------------------------------------------
+
+export interface AgentProblemRecommendation {
+  problem_id: number | null;
+  title: string;
+  platform: string;
+  difficulty: string | null;
+  url: string;
+  topics: string[];
+  reason: string;
+  priority: number;
+  likely_unsolved: boolean;
+}
+
+export interface AgentRecommendationResponse {
+  recommendations: AgentProblemRecommendation[];
+  agent_reasoning: string;
+  has_sufficient_data: boolean;
+  catalog_limited: boolean;
+  is_configured: boolean;
+  tool_calls_made: string[];
+  error: string | null;
+}
+
+export async function getAgentRecommendations(): Promise<AgentRecommendationResponse> {
+  return apiRequest<AgentRecommendationResponse>("/ai-coach/recommend", {
+    method: "POST",
+  });
+}
+
