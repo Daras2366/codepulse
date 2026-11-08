@@ -14,8 +14,6 @@ from __future__ import annotations
 
 import json
 import logging
-import signal
-import threading
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
@@ -25,13 +23,17 @@ from google.genai import types
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
+from app.models.problem import Problem
+from app.models.problem_topic import ProblemTopic
+from app.models.topic import Topic
 from app.services.agent_tools import (
-    get_user_performance_profile,
-    get_topic_performance,
-    get_recent_submissions,
-    get_user_goals,
-    search_candidate_problems,
     get_problem_details,
+    get_recent_submissions,
+    get_solved_problem_ids,
+    get_topic_performance,
+    get_user_goals,
+    get_user_performance_profile,
+    search_candidate_problems,
 )
 from app.services.gemini_service import GeminiNotConfiguredError
 
@@ -364,7 +366,12 @@ class RecommendationAgent:
             self._client = None
             self._configured = False
         else:
-            self._client = genai.Client(api_key=api_key)
+            self._client = genai.Client(
+                api_key=api_key,
+                http_options=types.HttpOptions(
+                    timeout=self._timeout * 1000  # HttpOptions.timeout is ms
+                ),
+            )
             self._configured = True
 
         self._dispatcher = ToolDispatcher(db, user_id)
@@ -661,6 +668,11 @@ class RecommendationAgent:
         if data.get("catalog_limited"):
             catalog_limited = True
 
+        # Ground recommendations in the DB: the model can hallucinate titles,
+        # URLs, or IDs, so every entry is verified against the Problem table
+        # and its fields are overwritten with authoritative DB values.
+        recommendations = self._verify_recommendations(recommendations)
+
         return AgentRecommendationResult(
             recommendations=recommendations,
             agent_reasoning=reasoning,
@@ -669,3 +681,96 @@ class RecommendationAgent:
             tool_calls_made=tool_calls_made,
             error=None,
         )
+
+    def _verify_recommendations(
+        self, recs: list[AgentRecommendation]
+    ) -> list[AgentRecommendation]:
+        """Verify agent-produced recommendations against the database.
+
+        The model is instructed to only recommend problems returned by
+        ``search_candidate_problems``, but nothing enforces that. This method:
+
+        - Drops recommendations that cannot be matched to a real Problem row
+          (by ``problem_id``, falling back to ``url``).
+        - Drops problems the user has already solved (ACCEPTED submission).
+        - Overwrites title/platform/difficulty/url/topics with DB values so
+          model-invented metadata can never reach the client.
+
+        Args:
+            recs: Parsed recommendations from the model's JSON response.
+
+        Returns:
+            List containing only DB-verified, unsolved recommendations.
+        """
+        if not recs:
+            return recs
+
+        solved_ids = get_solved_problem_ids(self._db, self._user_id)
+        verified: list[AgentRecommendation] = []
+
+        for rec in recs:
+            prob: Optional[Problem] = None
+
+            if rec.problem_id is not None:
+                prob = (
+                    self._db.query(Problem)
+                    .filter(Problem.id == rec.problem_id)
+                    .first()
+                )
+            elif rec.url:
+                prob = (
+                    self._db.query(Problem)
+                    .filter(Problem.problem_url == rec.url)
+                    .first()
+                )
+                if prob is not None:
+                    rec.problem_id = prob.id
+
+            if prob is None:
+                logger.info(
+                    "RecommendationAgent: dropping unverifiable recommendation "
+                    "(problem_id=%s title=%r) for user_id=%d",
+                    rec.problem_id,
+                    rec.title,
+                    self._user_id,
+                )
+                continue
+
+            if prob.id in solved_ids:
+                logger.info(
+                    "RecommendationAgent: dropping already-solved problem "
+                    "id=%d for user_id=%d",
+                    prob.id,
+                    self._user_id,
+                )
+                continue
+
+            topic_names = [
+                row[0]
+                for row in (
+                    self._db.query(Topic.name)
+                    .join(ProblemTopic, ProblemTopic.topic_id == Topic.id)
+                    .filter(ProblemTopic.problem_id == prob.id)
+                    .all()
+                )
+            ]
+
+            platform_val = prob.platform
+            if hasattr(platform_val, "value"):
+                platform_val = platform_val.value
+
+            difficulty_val = prob.difficulty
+            if hasattr(difficulty_val, "value"):
+                difficulty_val = difficulty_val.value
+            elif difficulty_val is not None:
+                difficulty_val = str(difficulty_val)
+
+            rec.title = prob.title
+            rec.platform = str(platform_val)
+            rec.difficulty = difficulty_val
+            rec.url = prob.problem_url
+            rec.topics = topic_names
+            rec.likely_unsolved = True
+            verified.append(rec)
+
+        return verified

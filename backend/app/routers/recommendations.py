@@ -394,7 +394,10 @@ def get_agent_recommendations(
         result: AgentRecommendationResult = agent.recommend()
 
         # Check for timeout-style errors
-        if result.error and "timed out" in result.error.lower():
+        if result.error and (
+            "timed out" in result.error.lower()
+            or "timeout" in result.error.lower()
+        ):
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                 detail=result.error,

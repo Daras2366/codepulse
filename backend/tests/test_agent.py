@@ -639,16 +639,22 @@ class TestRecommendationAgent:
         )
         assert len(result.recommendations) == 0
 
-    def test_text_response_parsed_correctly(self, db, test_user):
-        """Agent returns valid JSON → parsed into AgentRecommendationResult."""
+    def test_text_response_parsed_correctly(self, db, test_user, problems):
+        """Agent returns valid JSON → parsed into AgentRecommendationResult.
+
+        Uses problems[3] ("Winner") — a catalog problem the test user has
+        never attempted — because final recommendations are now verified
+        against the DB and solved/unknown problems are dropped.
+        """
+        unsolved = problems[3]
         valid_json = json.dumps({
             "recommendations": [
                 {
-                    "problem_id": 1,
-                    "title": "Theatre Square",
+                    "problem_id": unsolved.id,
+                    "title": unsolved.title,
                     "platform": "codeforces",
                     "difficulty": "Easy",
-                    "url": "https://codeforces.com/problemset/problem/1/A",
+                    "url": unsolved.problem_url,
                     "topics": ["Math"],
                     "reason": "Great for beginners learning basic math.",
                     "priority": 1,
@@ -672,7 +678,7 @@ class TestRecommendationAgent:
                 result = agent.recommend()
 
         assert len(result.recommendations) == 1
-        assert result.recommendations[0].title == "Theatre Square"
+        assert result.recommendations[0].title == unsolved.title
         assert result.has_sufficient_data is True
         assert result.error is None
 

@@ -15,7 +15,7 @@ import logging
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
-from sqlalchemy import func, distinct
+from sqlalchemy import func, distinct, select
 from sqlalchemy.orm import Session
 
 from app.models.enums import SubmissionStatus
@@ -49,10 +49,8 @@ def get_solved_problem_ids(db: Session, user_id: int) -> set[int]:
         Set of problem IDs with at least one ACCEPTED submission.
     """
     # Get all profile IDs that belong to this user
-    profile_ids = (
-        db.query(PlatformProfile.id)
-        .filter(PlatformProfile.user_id == user_id)
-        .subquery()
+    profile_ids = select(PlatformProfile.id).where(
+        PlatformProfile.user_id == user_id
     )
 
     rows = (
@@ -76,10 +74,8 @@ def _get_attempted_problem_ids(db: Session, user_id: int) -> set[int]:
     Returns:
         Set of problem IDs the user has ever attempted.
     """
-    profile_ids = (
-        db.query(PlatformProfile.id)
-        .filter(PlatformProfile.user_id == user_id)
-        .subquery()
+    profile_ids = select(PlatformProfile.id).where(
+        PlatformProfile.user_id == user_id
     )
 
     rows = (
@@ -199,10 +195,8 @@ def get_recent_submissions(
     """
     limit = max(1, min(limit, 50))
 
-    profile_ids_subq = (
-        db.query(PlatformProfile.id)
-        .filter(PlatformProfile.user_id == user_id)
-        .subquery()
+    profile_ids_subq = select(PlatformProfile.id).where(
+        PlatformProfile.user_id == user_id
     )
 
     rows = (
@@ -502,10 +496,8 @@ def get_problem_details(db: Session, user_id: int, problem_id: int) -> dict:
         }
 
     # Check user's submission history for this problem (scoped by user_id)
-    profile_ids_subq = (
-        db.query(PlatformProfile.id)
-        .filter(PlatformProfile.user_id == user_id)
-        .subquery()
+    profile_ids_subq = select(PlatformProfile.id).where(
+        PlatformProfile.user_id == user_id
     )
 
     submission_count = (
