@@ -26,3 +26,6 @@ htmlcov/
 
 # Docs
 docs/DEVELOPMENT_ROADMAP.md
+
+# Logs
+*.log
