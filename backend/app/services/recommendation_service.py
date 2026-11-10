@@ -20,11 +20,20 @@ class RecommendationService:
     def __init__(self) -> None:
         pass
 
-    def generate_recommendations(self, profile: PerformanceProfile) -> list[Recommendation]:
+    def generate_recommendations(
+        self,
+        profile: PerformanceProfile,
+        active_goals: list[dict] | None = None,
+    ) -> list[Recommendation]:
         """Generate prioritized recommendations from performance profile.
 
         Args:
             profile: Performance profile from PerformanceAnalyzer
+            active_goals: Optional list of the user's active goals as plain
+                dicts (``title``, ``goal_type``, ``target_value``,
+                ``deadline``). Used to align recommendations with stated
+                user intent. Never required — ``None`` keeps behaviour
+                identical to before.
 
         Returns:
             List of prioritized recommendations
@@ -33,6 +42,10 @@ class RecommendationService:
             return []
 
         recommendations: list[Recommendation] = []
+
+        # Goal-aligned recommendations (user-configured intent)
+        if active_goals:
+            recommendations.extend(self._generate_goal_recommendations(profile, active_goals))
 
         # Topic-based recommendations (highest priority)
         topic_recs = self._generate_topic_recommendations(profile)
@@ -50,11 +63,21 @@ class RecommendationService:
         contest_recs = self._generate_contest_recommendations(profile)
         recommendations.extend(contest_recs)
 
-        # Sort by priority (high > medium > low)
-        priority_order = {"high": 0, "medium": 1, "low": 2}
-        recommendations.sort(key=lambda r: priority_order[r.priority])
+        # De-duplicate by title (goal recs can overlap topic recs) and sort
+        # by priority (high > medium > low).
+        seen_titles: set[str] = set()
+        unique: list[Recommendation] = []
+        for rec in recommendations:
+            key = rec.title.strip().lower()
+            if key in seen_titles:
+                continue
+            seen_titles.add(key)
+            unique.append(rec)
 
-        return recommendations[:10]  # Return top 10 recommendations
+        priority_order = {"high": 0, "medium": 1, "low": 2}
+        unique.sort(key=lambda r: priority_order[r.priority])
+
+        return unique[:10]  # Return top 10 recommendations
 
     def _has_sufficient_data(self, profile: PerformanceProfile) -> bool:
         """Check if there's enough data to generate meaningful recommendations."""
@@ -63,6 +86,78 @@ class RecommendationService:
             profile.overview.solved_problems > 0
             or profile.submission_behavior.total_submissions > 0
         )
+
+    def _generate_goal_recommendations(
+        self, profile: PerformanceProfile, active_goals: list[dict]
+    ) -> list[Recommendation]:
+        """Align recommendations with the user's active goals.
+
+        Only emits a recommendation when the goal is genuinely actionable
+        against the performance data — e.g. a topic goal pointing at a weak
+        or neglected area, or a problem-count goal that benefits from the
+        weakest identified topic.
+        """
+        recommendations: list[Recommendation] = []
+
+        problem_goals = [
+            g for g in active_goals
+            if str(g.get("goal_type", "")).lower() in {"problems", "topic", "placement"}
+        ]
+        if not problem_goals:
+            return recommendations
+
+        # Find the weakest topic to anchor the recommendation.
+        weak = [t for t in profile.topic_performance if t.strength_level == "weak"]
+        anchor = min(weak, key=lambda t: t.solved_count) if weak else None
+
+        for goal in problem_goals[:2]:
+            title = str(goal.get("title", "your goal")).strip() or "your goal"
+            target = goal.get("target_value")
+            target_str = f"{target} problems" if isinstance(target, int) else "your target"
+
+            if goal.get("goal_type") == "topic" and goal.get("topic_name"):
+                topic_name = str(goal["topic_name"])
+                topic_perf = next(
+                    (t for t in profile.topic_performance if t.topic == topic_name), None
+                )
+                evidence = (
+                    f" ({topic_perf.solved_count} solved so far)"
+                    if topic_perf
+                    else " (not yet started)"
+                )
+                reason = (
+                    f"You set a goal to practice {topic_name}{evidence}. "
+                    "Consistent, focused sessions on this topic will keep you on track."
+                )
+            elif anchor is not None:
+                reason = (
+                    f"To reach \"{title}\" ({target_str}), prioritise your weakest "
+                    f"area — {anchor.topic} — where targeted practice has the highest impact."
+                )
+            else:
+                reason = (
+                    f"You have an active goal \"{title}\" ({target_str}). "
+                    "Steady daily practice is the most reliable way to reach it."
+                )
+
+            recommendations.append(
+                Recommendation(
+                    category="topic" if anchor is not None else "consistency",
+                    title=f"Work toward your goal: {title}",
+                    reason=reason,
+                    priority="medium",
+                    suggested_activity=(
+                        f"Solve problems toward \"{title}\""
+                        + (f" — start with {anchor.topic}" if anchor is not None else "")
+                    ),
+                    target_metric=target_str,
+                    difficulty_suggestion=self._suggest_difficulty(profile, anchor.topic)
+                    if anchor is not None
+                    else "mixed",
+                )
+            )
+
+        return recommendations
 
     def _generate_topic_recommendations(self, profile: PerformanceProfile) -> list[Recommendation]:
         """Generate topic-focused recommendations.

@@ -13,13 +13,17 @@ from typing import Optional
 
 from app.core.deps import get_current_user
 from app.core.database import get_db
+from app.models.enums import GoalStatus
+from app.models.goal import Goal
 from app.models.user import User
 from app.schemas.analytics import (
     PerformanceProfile,
     RecommendationsResponse,
 )
+from app.schemas.study_plan import StudyPlanContest, StudyPlanResponse
 from app.services.performance_analyzer import PerformanceAnalyzer
 from app.services.recommendation_service import RecommendationService
+from app.services.study_plan_service import StudyPlanService
 from app.services.gemini_service import (
     GeminiService,
     GeminiNotConfiguredError,
@@ -97,6 +101,26 @@ class ChatResponse(BaseModel):
     is_configured: bool
 
 
+def _get_active_goals(db: Session, user_id: int) -> list[dict]:
+    """Return the user's active goals as plain dicts for the recommendation engine."""
+    goals = (
+        db.query(Goal)
+        .filter(Goal.user_id == user_id, Goal.status == GoalStatus.ACTIVE)
+        .order_by(Goal.created_at.desc())
+        .all()
+    )
+    return [
+        {
+            "title": g.title,
+            "goal_type": g.goal_type.value if hasattr(g.goal_type, "value") else str(g.goal_type),
+            "target_value": g.target_value,
+            "topic_name": g.topic_name,
+            "deadline": g.deadline.isoformat() if g.deadline else None,
+        }
+        for g in goals
+    ]
+
+
 @router.get("/recommendations", response_model=RecommendationsResponse)
 def get_recommendations(
     current_user: User = Depends(get_current_user),
@@ -110,7 +134,9 @@ def get_recommendations(
     profile = analyzer.analyze_user_performance(current_user.id)
 
     recommendation_service = RecommendationService()
-    recommendations = recommendation_service.generate_recommendations(profile)
+    recommendations = recommendation_service.generate_recommendations(
+        profile, active_goals=_get_active_goals(db, current_user.id)
+    )
 
     has_sufficient_data = (
         profile.overview.solved_problems > 0
@@ -149,10 +175,16 @@ async def chat_with_coach(
     profile = analyzer.analyze_user_performance(current_user.id)
 
     recommendation_service = RecommendationService()
-    recommendations = recommendation_service.generate_recommendations(profile)
+    active_goals = _get_active_goals(db, current_user.id)
+    recommendations = recommendation_service.generate_recommendations(
+        profile, active_goals=active_goals
+    )
 
     performance_summary = _build_performance_summary(profile)
     recommendations_summary = _build_recommendations_summary(recommendations)
+    if active_goals:
+        goal_lines = ", ".join(g["title"] for g in active_goals[:3])
+        recommendations_summary += f"\n\nActive user goals: {goal_lines}"
 
     # Convert validated ChatMessage objects back to plain dicts for the service.
     history: list[dict[str, str]] | None = None
@@ -351,6 +383,7 @@ class AgentRecommendationResponse(BaseModel):
     is_configured: bool
     tool_calls_made: list[str]
     error: Optional[str] = None
+    error_kind: Optional[str] = None
 
 
 # ---------------------------------------------------------------------------
@@ -424,6 +457,7 @@ def get_agent_recommendations(
             is_configured=True,
             tool_calls_made=result.tool_calls_made,
             error=result.error,
+            error_kind=result.error_kind,
         )
 
     except HTTPException:
@@ -434,3 +468,44 @@ def get_agent_recommendations(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail=f"AI recommendation agent error: {type(exc).__name__}",
         ) from exc
+
+
+# ---------------------------------------------------------------------------
+# Personalized study plan & upcoming contests
+# ---------------------------------------------------------------------------
+
+
+@router.get("/ai-coach/study-plan", response_model=StudyPlanResponse)
+def get_study_plan(
+    timezone: Optional[str] = None,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> StudyPlanResponse:
+    """Get today's personalized study plan.
+
+    Everything returned is derived from the authenticated user's real data:
+    focus topic from the performance profile (or an active topic goal),
+    problems are unsolved ``Problem`` catalog rows, the daily target comes
+    only from an active user goal with a deadline, and the contest is the
+    next future ``Contest`` record. No value is fabricated.
+
+    ``timezone`` is an optional IANA name (e.g. "Asia/Kolkata") used only to
+    compute the user's local calendar day for daily progress; invalid values
+    fall back to UTC.
+    """
+    return StudyPlanService(db).build_plan(current_user.id, tz_name=timezone)
+
+
+@router.get("/ai-coach/upcoming-contests", response_model=list[StudyPlanContest])
+def get_upcoming_contests(
+    limit: int = 5,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> list[StudyPlanContest]:
+    """List upcoming contests (start_time strictly in the future).
+
+    Past contests are never returned. Contest data is global (not
+    user-specific) but the endpoint still requires authentication.
+    """
+    limit = max(1, min(limit, 20))
+    return StudyPlanService(db).upcoming_contests(limit=limit)

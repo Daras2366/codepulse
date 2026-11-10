@@ -71,6 +71,7 @@ export interface AgentRecommendationResponse {
   is_configured: boolean;
   tool_calls_made: string[];
   error: string | null;
+  error_kind?: string | null;
 }
 
 export async function getAgentRecommendations(): Promise<AgentRecommendationResponse> {
@@ -79,3 +80,59 @@ export async function getAgentRecommendations(): Promise<AgentRecommendationResp
   });
 }
 
+// ---------------------------------------------------------------------------
+// Personalized study plan & upcoming contests
+// ---------------------------------------------------------------------------
+
+export interface StudyPlanProblem {
+  id: number;
+  title: string;
+  platform: string;
+  difficulty: string | null;
+  url: string;
+  topics: string[];
+  estimated_minutes: number;
+  acceptance_rate: number | null;
+}
+
+export interface StudyPlanDailyTarget {
+  solved_today: number;
+  daily_target: number | null;
+  target_label: string | null;
+  target_source: string | null;
+  timezone: string;
+}
+
+export interface StudyPlanContest {
+  id: number;
+  title: string;
+  platform: string;
+  contest_url: string;
+  start_time: string;
+  duration_minutes: number;
+}
+
+export interface StudyPlanResponse {
+  has_sufficient_data: boolean;
+  focus_topic: string | null;
+  focus_reason: string | null;
+  problems: StudyPlanProblem[];
+  problems_planned: number;
+  total_estimated_minutes: number;
+  estimate_note: string;
+  daily: StudyPlanDailyTarget;
+  upcoming_contest: StudyPlanContest | null;
+  catalog_size: number;
+  limitations: string[];
+}
+
+export function getStudyPlan(timezone?: string) {
+  const tz =
+    timezone ??
+    (typeof Intl !== "undefined" ? Intl.DateTimeFormat().resolvedOptions().timeZone : "UTC");
+  return apiRequest<StudyPlanResponse>(`/ai-coach/study-plan?timezone=${encodeURIComponent(tz)}`);
+}
+
+export function getUpcomingContests(limit = 5) {
+  return apiRequest<StudyPlanContest[]>(`/ai-coach/upcoming-contests?limit=${limit}`);
+}

@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
@@ -35,7 +36,16 @@ from app.services.agent_tools import (
     get_user_performance_profile,
     search_candidate_problems,
 )
-from app.services.gemini_service import GeminiNotConfiguredError
+from app.services.gemini_service import (
+    KIND_AUTH,
+    KIND_BAD_REQUEST,
+    KIND_UNKNOWN,
+    GeminiNotConfiguredError,
+    GeminiProviderError,
+    _provider_error_for_kind,
+    classify_gemini_exception,
+    retry_delay_seconds,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -69,6 +79,7 @@ class AgentRecommendationResult:
     catalog_limited: bool = False
     tool_calls_made: list[str] = field(default_factory=list)
     error: Optional[str] = None
+    error_kind: Optional[str] = None  # provider_unavailable | rate_limited | auth | ...
 
 
 # ---------------------------------------------------------------------------
@@ -362,7 +373,7 @@ class RecommendationAgent:
         self._timeout = settings.GEMINI_TIMEOUT_SECONDS
 
         api_key = settings.GEMINI_API_KEY
-        if not api_key:
+        if not api_key or not isinstance(api_key, str):
             self._client = None
             self._configured = False
         else:
@@ -373,6 +384,27 @@ class RecommendationAgent:
                 ),
             )
             self._configured = True
+
+        # Model chain: primary first, optional verified fallback second.
+        # Read defensively — tests patch ``settings`` with a bare MagicMock.
+        primary = getattr(settings, "GEMINI_MODEL", None)
+        self._models = [
+            primary if isinstance(primary, str) and primary else "gemini-3.5-flash"
+        ]
+        fallback = getattr(settings, "GEMINI_FALLBACK_MODEL", None)
+        if (
+            isinstance(fallback, str)
+            and fallback.strip()
+            and fallback != self._models[0]
+        ):
+            self._models.append(fallback)
+
+        retries = getattr(settings, "GEMINI_MAX_RETRIES", 2)
+        self._max_retries = retries if isinstance(retries, int) else 2
+        base = getattr(settings, "GEMINI_RETRY_BASE_DELAY_SECONDS", 0.5)
+        self._base_delay = float(base) if isinstance(base, (int, float)) else 0.5
+        cap = getattr(settings, "GEMINI_RETRY_MAX_DELAY_SECONDS", 8.0)
+        self._max_delay = float(cap) if isinstance(cap, (int, float)) else 8.0
 
         self._dispatcher = ToolDispatcher(db, user_id)
 
@@ -401,6 +433,19 @@ class RecommendationAgent:
 
         try:
             return self._run_agent_loop()
+
+        except GeminiProviderError as exc:
+            logger.warning(
+                "RecommendationAgent: provider error kind=%s user_id=%d: %s",
+                exc.kind,
+                self._user_id,
+                exc,
+            )
+            return AgentRecommendationResult(
+                error=str(exc),
+                error_kind=exc.kind,
+                has_sufficient_data=False,
+            )
 
         except Exception as exc:
             logger.error(
@@ -457,11 +502,7 @@ class RecommendationAgent:
                 self._user_id,
             )
 
-            response = self._client.models.generate_content(  # type: ignore[union-attr]
-                model=self._model,
-                contents=contents,
-                config=config,
-            )
+            response = self._generate_content(contents, config)
 
             # Append the model's response to the conversation
             if response.candidates and response.candidates[0].content:
@@ -523,11 +564,7 @@ class RecommendationAgent:
                 temperature=0.4,
                 max_output_tokens=2000,
             )
-            final_response = self._client.models.generate_content(  # type: ignore[union-attr]
-                model=self._model,
-                contents=contents,
-                config=final_config,
-            )
+            final_response = self._generate_content(contents, final_config)
             text = self._extract_text(final_response)
             result = self._parse_final_response(text, tool_calls_made)
             result.error = (
@@ -535,12 +572,92 @@ class RecommendationAgent:
                 " (Warning: agent reached max tool call iterations)"
             ).strip()
             return result
+        except GeminiProviderError:
+            raise
         except Exception as exc:
             return AgentRecommendationResult(
                 tool_calls_made=tool_calls_made,
                 error=f"Agent exceeded max iterations and failed to produce a response: {exc}",
                 has_sufficient_data=False,
             )
+
+    def _generate_content(self, contents: Any, config: Any) -> Any:
+        """Call ``models.generate_content`` with bounded retries and model fallback.
+
+        Iterates ``self._models`` (primary, then optional fallback). Transient
+        errors (5xx, 429, timeout, network, empty response) are retried with
+        exponential backoff + jitter up to ``self._max_retries`` per model.
+        Permanent errors (401/403/400) abort immediately. Model-level failures
+        (404 / model not found) move to the next model.
+
+        Raises:
+            GeminiProviderError: when every model is exhausted or a permanent
+                error occurs.
+        """
+        last_kind = KIND_UNKNOWN
+        last_exc: BaseException | None = None
+
+        for model in self._models:
+            for attempt in range(self._max_retries + 1):
+                start = time.monotonic()
+                try:
+                    response = self._client.models.generate_content(  # type: ignore[union-attr]
+                        model=model,
+                        contents=contents,
+                        config=config,
+                    )
+                    logger.info(
+                        "gemini_call endpoint=ai-coach/recommend model=%s "
+                        "attempt=%d outcome=success duration_ms=%.0f",
+                        model,
+                        attempt,
+                        (time.monotonic() - start) * 1000,
+                    )
+                    return response
+                except Exception as exc:
+                    duration_ms = (time.monotonic() - start) * 1000
+                    kind, retryable = classify_gemini_exception(exc)
+                    logger.warning(
+                        "gemini_call endpoint=ai-coach/recommend model=%s "
+                        "attempt=%d outcome=%s duration_ms=%.0f",
+                        model,
+                        attempt,
+                        kind,
+                        duration_ms,
+                    )
+                    last_kind = kind
+                    last_exc = exc
+
+                    if not retryable:
+                        if kind in (KIND_AUTH, KIND_BAD_REQUEST):
+                            raise _provider_error_for_kind(kind, exc) from exc
+                        # Model-level failure → try next model.
+                        break
+
+                    if attempt < self._max_retries:
+                        delay = retry_delay_seconds(
+                            attempt, self._base_delay, self._max_delay
+                        )
+                        logger.debug(
+                            "gemini_call endpoint=ai-coach/recommend "
+                            "model=%s retry_in=%.2fs",
+                            model,
+                            delay,
+                        )
+                        time.sleep(delay)
+                        continue
+                    # Retries exhausted for this model → next model.
+                    break
+
+        # Every model failed. Surface a classified, user-safe error.
+        provider_error = _provider_error_for_kind(last_kind, last_exc or Exception())
+        if last_kind == KIND_UNKNOWN:
+            provider_error = GeminiProviderError(
+                "The AI provider is temporarily unavailable. Please try again.",
+                is_retryable=True,
+                kind=KIND_UNKNOWN,
+            )
+        raise provider_error
 
     def _extract_text(self, response: Any) -> str:
         """Extract text from a generate_content response.

@@ -35,8 +35,19 @@ class Settings(BaseSettings):
     # Override with GEMINI_MODEL in .env. Verify at:
     # https://ai.google.dev/gemini-api/docs/models
     GEMINI_MODEL: str = "gemini-3.5-flash"
+    # Optional fallback model tried when the primary model is unavailable
+    # (e.g. 503 high-demand or 404 model-not-found). Must be verified against
+    # BOTH client.models.generate_content (agent) and client.interactions.create
+    # (chat) before enabling. Leave unset to disable fallback.
+    GEMINI_FALLBACK_MODEL: str | None = None
     # Request timeout in seconds for Gemini API calls
     GEMINI_TIMEOUT_SECONDS: int = 30
+    # Bounded retries with exponential backoff + jitter for transient provider
+    # errors (503/429/timeout/network). Permanent errors (401/403/400) are
+    # never retried.
+    GEMINI_MAX_RETRIES: int = 2
+    GEMINI_RETRY_BASE_DELAY_SECONDS: float = 0.5
+    GEMINI_RETRY_MAX_DELAY_SECONDS: float = 8.0
 
     class Config:
         env_file = ".env"

@@ -1,31 +1,37 @@
-import { createFileRoute, redirect } from "@tanstack/react-router";
+import { createFileRoute, Link, redirect } from "@tanstack/react-router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   AlertCircle,
   Bot,
   BrainCircuit,
+  CalendarClock,
   ExternalLink,
   Loader2,
   RefreshCw,
   RotateCcw,
   Send,
   Sparkles,
+  Trophy,
 } from "lucide-react";
 import * as React from "react";
 
 import { hasAccessToken } from "@/api/client";
+import { getPerformanceProfile, type PerformanceProfile } from "@/api/analytics";
 import {
   chatWithCoach,
   getAgentRecommendations,
   getRecommendations,
+  getUpcomingContests,
   type AgentRecommendationResponse,
   type Recommendation,
 } from "@/api/recommendations";
-import { getPerformanceProfile } from "@/api/analytics";
 
 import { AppShell } from "@/components/layout/AppShell";
-import { StudyPlanCard } from "@/components/dashboard/StudyPlanCard";
+import { StudyPlanSection } from "@/components/coach/StudyPlanSection";
+import { Markdown } from "@/components/coach/Markdown";
 import { Panel } from "@/components/ui-kit/Panel";
+import { EmptyState, ErrorState, Skeleton } from "@/components/ui-kit/motion";
+import { cn } from "@/lib/utils";
 
 const title = "AI Coach — CodePulse";
 const description =
@@ -51,112 +57,603 @@ export const Route = createFileRoute("/ai-coach")({
 });
 
 // ---------------------------------------------------------------------------
-// Sub-components
+// Shared bits
 // ---------------------------------------------------------------------------
 
-function StrengthItem({
-  description,
-  metric_value,
-  supporting_metric,
-}: {
-  description: string;
-  metric_value: number | string;
-  supporting_metric: string;
-}) {
+function SectionLoader({ rows = 3 }: { rows?: number }) {
   return (
-    <li className="flex items-start gap-3 rounded-2xl bg-green-soft/30 p-3">
-      <BrainCircuit className="h-5 w-5 shrink-0 text-green mt-0.5" strokeWidth={1.6} />
-      <div>
-        <p className="text-card-title">{description}</p>
-        <p className="text-caption mt-1 text-subtle">
-          {supporting_metric}: <strong>{metric_value}</strong>
-        </p>
+    <div className="space-y-3" aria-busy>
+      {Array.from({ length: rows }).map((_, i) => (
+        <Skeleton key={i} className="h-16 w-full rounded-2xl" />
+      ))}
+    </div>
+  );
+}
+
+function RefreshButton({ onClick, title }: { onClick: () => void; title: string }) {
+  return (
+    <button
+      onClick={onClick}
+      className="flex h-9 w-9 items-center justify-center rounded-full bg-violet-soft text-violet transition-colors hover:bg-violet-soft/80"
+      title={title}
+    >
+      <RefreshCw className="h-4 w-4" strokeWidth={1.6} />
+    </button>
+  );
+}
+
+function priorityBadgeClass(priority: string) {
+  if (priority === "high") return "bg-pink-soft text-pink";
+  if (priority === "medium") return "bg-yellow-soft text-yellow";
+  return "bg-green-soft text-green";
+}
+
+function formatEnumLabel(value: string) {
+  // "well_covered" → "Well covered", "Dynamic Programming" stays as-is.
+  return value.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+}
+
+// ---------------------------------------------------------------------------
+// Recommendations section (deterministic — independent of Gemini)
+// ---------------------------------------------------------------------------
+
+function RecommendationsSection() {
+  const { data, isLoading, error, refetch } = useQuery({
+    queryKey: ["recommendations"],
+    queryFn: getRecommendations,
+  });
+
+  const recommendations = data?.recommendations ?? [];
+  const hasSufficientData = data?.has_sufficient_data ?? false;
+  const dataQuality = data?.data_quality;
+
+  return (
+    <Panel
+      title="Personalized Recommendations"
+      caption="Deterministic analysis of your actual performance data"
+      action={<RefreshButton onClick={() => refetch()} title="Refresh recommendations" />}
+    >
+      {isLoading ? (
+        <SectionLoader />
+      ) : error ? (
+        <ErrorState
+          title="Recommendations unavailable"
+          description="We couldn't load your recommendations. The rest of this page still works."
+          onRetry={() => refetch()}
+        />
+      ) : !hasSufficientData ? (
+        <EmptyState
+          title="Not enough data yet"
+          description="Sync your platforms to get personalized recommendations based on your real practice history."
+          action={
+            <Link to="/platforms">
+              <button className="rounded-full bg-primary px-5 py-2.5 text-caption font-semibold text-primary-foreground">
+                Connect a platform
+              </button>
+            </Link>
+          }
+        />
+      ) : (
+        <div className="space-y-4">
+          {dataQuality &&
+            (!dataQuality.has_topic_data ||
+              !dataQuality.has_contest_data ||
+              dataQuality.locally_tagged_solved < dataQuality.profile_reported_solved) && (
+              <div className="rounded-2xl border border-yellow-soft bg-yellow-soft/20 px-4 py-3 text-caption text-yellow-700">
+                <strong>Data coverage note:</strong>
+                {!dataQuality.has_topic_data && " No topic data is available."}
+                {!dataQuality.has_contest_data && " No contest data is available."}
+                {dataQuality.locally_tagged_solved < dataQuality.profile_reported_solved &&
+                  ` Only ${dataQuality.locally_tagged_solved} of ${dataQuality.profile_reported_solved} solved problems have topic tags.`}
+              </div>
+            )}
+
+          {recommendations.length === 0 ? (
+            <p className="text-body text-muted-foreground">
+              No recommendations right now — keep practicing and check back after your next sync.
+            </p>
+          ) : (
+            <ul className="grid gap-4 lg:grid-cols-2">
+              {recommendations.slice(0, 6).map((rec, index) => (
+                <RecommendationCard key={index} rec={rec} />
+              ))}
+            </ul>
+          )}
+        </div>
+      )}
+    </Panel>
+  );
+}
+
+function RecommendationCard({ rec }: { rec: Recommendation }) {
+  return (
+    <li
+      className={cn(
+        "lift rounded-2xl border border-border bg-muted/50 p-5",
+        rec.priority === "high" && "border-l-4 border-l-pink",
+      )}
+    >
+      <div className="flex items-center gap-2">
+        <span
+          className={cn(
+            "text-label rounded-full px-2 py-0.5 text-xs font-medium",
+            priorityBadgeClass(rec.priority),
+          )}
+        >
+          {rec.priority.toUpperCase()}
+        </span>
+        <span className="text-label text-subtle uppercase">{rec.category}</span>
+      </div>
+      <p className="text-card-title mt-2">{rec.title}</p>
+      <p className="text-body mt-2 text-muted-foreground">{rec.reason}</p>
+      <dl className="mt-3 space-y-1">
+        <div className="flex gap-2 text-caption">
+          <dt className="shrink-0 font-semibold text-subtle">Action:</dt>
+          <dd className="text-muted-foreground">{rec.suggested_activity}</dd>
+        </div>
+        <div className="flex gap-2 text-caption">
+          <dt className="shrink-0 font-semibold text-subtle">Target:</dt>
+          <dd className="text-muted-foreground">{rec.target_metric}</dd>
+        </div>
+        {rec.difficulty_suggestion !== "mixed" && (
+          <div className="flex gap-2 text-caption">
+            <dt className="shrink-0 font-semibold text-subtle">Difficulty:</dt>
+            <dd className="text-muted-foreground">{formatEnumLabel(rec.difficulty_suggestion)}</dd>
+          </div>
+        )}
+      </dl>
+    </li>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// AI problem recommendations (Gemini agent — isolated failure domain)
+// ---------------------------------------------------------------------------
+
+function agentErrorMessage(data: AgentRecommendationResponse | undefined, queryError: unknown) {
+  const kind = data?.error_kind;
+  if (kind === "provider_unavailable" || kind === "rate_limited" || kind === "timeout") {
+    return "The AI provider is temporarily unavailable (high demand or rate limit). Your deterministic recommendations above are unaffected — try again shortly.";
+  }
+  if (kind === "auth") {
+    return "The configured Gemini API key was rejected. Check GEMINI_API_KEY in the backend environment.";
+  }
+  if (data?.error) return `AI recommendations failed: ${data.error}`;
+  if (queryError) return "Failed to reach the AI recommendation service. Please try again.";
+  return "AI recommendations failed. Please try again.";
+}
+
+function AgentRecommendationsSection() {
+  const queryClient = useQueryClient();
+  const [enabled, setEnabled] = React.useState(false);
+
+  const { data, isLoading, error, refetch } = useQuery({
+    queryKey: ["agent-recommendations"],
+    queryFn: getAgentRecommendations,
+    enabled,
+    retry: false,
+  });
+
+  const start = () => {
+    setEnabled(true);
+    queryClient.invalidateQueries({ queryKey: ["agent-recommendations"] });
+  };
+
+  return (
+    <Panel
+      title="AI Problem Recommendations"
+      caption="Gemini searches your real problem catalog for unsolved problems matched to your weak areas"
+      action={
+        data ? (
+          <RefreshButton onClick={() => refetch()} title="Get fresh AI recommendations" />
+        ) : undefined
+      }
+    >
+      {!enabled && !data ? (
+        <div className="flex flex-col items-center gap-4 py-6">
+          <p className="text-body max-w-md text-center text-muted-foreground">
+            Let Gemini analyse your profile and find specific unsolved problems from your synced
+            catalog.
+          </p>
+          <button
+            onClick={start}
+            className="flex items-center gap-2 rounded-2xl bg-violet px-5 py-2.5 text-caption font-medium text-white transition-colors hover:bg-violet/90"
+          >
+            <Sparkles className="h-4 w-4" />
+            Get AI Recommendations
+          </button>
+        </div>
+      ) : isLoading ? (
+        <div className="flex flex-col items-center gap-3 py-8">
+          <Loader2 className="h-7 w-7 animate-spin text-violet" />
+          <p className="text-body text-center text-muted-foreground">
+            AI agent is analysing your profile and searching for problems…
+          </p>
+        </div>
+      ) : error ? (
+        <div className="flex flex-col items-center gap-4 py-6">
+          <AlertCircle className="h-7 w-7 text-pink" />
+          <p className="text-body max-w-md text-center text-muted-foreground">
+            {agentErrorMessage(undefined, error)}
+          </p>
+          <button
+            onClick={() => refetch()}
+            className="flex items-center gap-2 rounded-2xl bg-violet px-4 py-2 text-caption font-medium text-white transition-colors hover:bg-violet/90"
+          >
+            <RefreshCw className="h-4 w-4" />
+            Retry
+          </button>
+        </div>
+      ) : data && !data.is_configured ? (
+        <div className="rounded-2xl bg-muted/50 p-4">
+          <p className="text-body text-muted-foreground">
+            AI recommendations are not configured. Set{" "}
+            <code className="font-mono">GEMINI_API_KEY</code> in the backend environment to enable
+            this feature.
+          </p>
+        </div>
+      ) : data && data.error && data.recommendations.length === 0 ? (
+        <div className="flex flex-col items-center gap-4 py-6">
+          <AlertCircle className="h-7 w-7 text-pink" />
+          <p className="text-body max-w-md text-center text-muted-foreground">
+            {agentErrorMessage(data, null)}
+          </p>
+          <button
+            onClick={() => refetch()}
+            className="flex items-center gap-2 rounded-2xl bg-violet px-4 py-2 text-caption font-medium text-white transition-colors hover:bg-violet/90"
+          >
+            <RefreshCw className="h-4 w-4" />
+            Retry
+          </button>
+        </div>
+      ) : data ? (
+        <div className="space-y-4">
+          {data.catalog_limited && (
+            <div className="rounded-2xl border border-yellow-soft bg-yellow-soft/20 px-4 py-3 text-caption text-yellow-700">
+              <strong>Catalog note:</strong> The problem catalog only contains problems synced from
+              your submission history. Sync more submissions to expand it.
+            </div>
+          )}
+
+          {data.agent_reasoning && (
+            <div className="rounded-2xl bg-violet-soft/30 px-4 py-3">
+              <p className="text-caption text-subtle">{data.agent_reasoning}</p>
+            </div>
+          )}
+
+          {data.recommendations.length === 0 ? (
+            <p className="text-body text-muted-foreground">
+              No candidate problems found in the catalog. Try syncing more submissions.
+            </p>
+          ) : (
+            <ul className="grid gap-4 lg:grid-cols-2">
+              {data.recommendations.slice(0, 6).map((rec, index) => (
+                <li
+                  key={rec.problem_id ?? index}
+                  className="lift rounded-2xl border border-border bg-muted/50 p-5"
+                >
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="text-label rounded-full bg-violet-soft px-2 py-0.5 text-xs font-medium text-violet">
+                      Priority {rec.priority}
+                    </span>
+                    <span className="text-label rounded-full bg-muted px-2 py-0.5 text-xs text-subtle">
+                      {rec.platform}
+                    </span>
+                    {rec.difficulty && (
+                      <span
+                        className={cn(
+                          "text-label rounded-full px-2 py-0.5 text-xs font-medium",
+                          rec.difficulty === "Easy"
+                            ? "bg-green-soft text-green"
+                            : rec.difficulty === "Medium"
+                              ? "bg-yellow-soft text-yellow"
+                              : "bg-pink-soft text-pink",
+                        )}
+                      >
+                        {rec.difficulty}
+                      </span>
+                    )}
+                    <span className="text-label text-xs text-subtle">
+                      {rec.likely_unsolved ? "Verified unsolved" : "Solve status uncertain"}
+                    </span>
+                  </div>
+
+                  <a
+                    href={rec.url}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="text-card-title mt-2 flex items-center gap-1 hover:text-violet"
+                  >
+                    {rec.title}
+                    <ExternalLink className="h-3.5 w-3.5 shrink-0 opacity-60" />
+                  </a>
+
+                  {rec.topics.length > 0 && (
+                    <div className="mt-2 flex flex-wrap gap-1.5">
+                      {rec.topics.slice(0, 5).map((topic) => (
+                        <span
+                          key={topic}
+                          className="rounded-full bg-muted px-2 py-0.5 text-xs text-subtle"
+                        >
+                          {topic}
+                        </span>
+                      ))}
+                    </div>
+                  )}
+
+                  <p className="text-body mt-3 text-muted-foreground">{rec.reason}</p>
+                </li>
+              ))}
+            </ul>
+          )}
+
+          {data.error && data.recommendations.length > 0 && (
+            <p className="text-caption text-subtle">Note: {data.error}</p>
+          )}
+
+          <div className="flex items-center justify-between">
+            <p className="text-caption text-subtle">
+              {data.tool_calls_made.length} tool call
+              {data.tool_calls_made.length !== 1 ? "s" : ""} made
+            </p>
+            <button
+              onClick={() => refetch()}
+              className="flex items-center gap-2 rounded-2xl border border-border px-4 py-2 text-caption font-medium text-subtle transition-colors hover:bg-muted"
+            >
+              <RefreshCw className="h-3.5 w-3.5" />
+              Reconsider
+            </button>
+          </div>
+        </div>
+      ) : null}
+    </Panel>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Strengths & weaknesses (performance profile — independent failure domain)
+// ---------------------------------------------------------------------------
+
+function StrengthsWeaknessesSection() {
+  const { data, isLoading, error, refetch } = useQuery({
+    queryKey: ["performance-profile"],
+    queryFn: getPerformanceProfile,
+  });
+
+  const profile = data?.profile;
+
+  return (
+    <div className="grid gap-6 xl:grid-cols-2">
+      <Panel
+        title="Strengths"
+        caption="Patterns derived from your actual submission data"
+        action={
+          <span className="flex h-9 w-9 items-center justify-center rounded-full bg-green-soft">
+            <BrainCircuit className="h-4 w-4" strokeWidth={1.6} />
+          </span>
+        }
+      >
+        {isLoading ? (
+          <SectionLoader rows={2} />
+        ) : error ? (
+          <ErrorState
+            title="Strengths unavailable"
+            description="Performance profile could not be loaded."
+            onRetry={() => refetch()}
+          />
+        ) : !profile || profile.strengths.length === 0 ? (
+          <p className="text-body text-muted-foreground">
+            No strengths identified yet. Keep practicing to build your profile!
+          </p>
+        ) : (
+          <ul className="space-y-3">
+            {profile.strengths.slice(0, 4).map((s, index) => (
+              <li key={index} className="flex items-start gap-3 rounded-2xl bg-green-soft/30 p-3">
+                <BrainCircuit className="mt-0.5 h-5 w-5 shrink-0 text-green" strokeWidth={1.6} />
+                <div>
+                  <p className="text-card-title">{s.description}</p>
+                  <p className="text-caption mt-1 text-subtle">
+                    {s.supporting_metric}:{" "}
+                    <strong>
+                      {typeof s.metric_value === "number"
+                        ? s.metric_value.toLocaleString()
+                        : s.metric_value}
+                    </strong>
+                  </p>
+                </div>
+              </li>
+            ))}
+          </ul>
+        )}
+      </Panel>
+
+      <Panel
+        title="Weaknesses"
+        caption="Areas for improvement — based on your actual data"
+        action={
+          <span className="flex h-9 w-9 items-center justify-center rounded-full bg-pink-soft">
+            <Bot className="h-4 w-4" strokeWidth={1.6} />
+          </span>
+        }
+      >
+        {isLoading ? (
+          <SectionLoader rows={2} />
+        ) : error ? (
+          <ErrorState
+            title="Weaknesses unavailable"
+            description="Performance profile could not be loaded."
+            onRetry={() => refetch()}
+          />
+        ) : !profile || profile.weaknesses.length === 0 ? (
+          <p className="text-body text-muted-foreground">
+            No weaknesses identified. Great job maintaining balance across topics!
+          </p>
+        ) : (
+          <ul className="space-y-3">
+            {profile.weaknesses.slice(0, 4).map((w, index) => (
+              <li key={index} className="flex items-start gap-3 rounded-2xl bg-pink-soft/30 p-3">
+                <Bot className="mt-0.5 h-5 w-5 shrink-0 text-pink" strokeWidth={1.6} />
+                <div>
+                  <p className="text-card-title">{w.description}</p>
+                  <p className="text-caption mt-1 text-subtle">
+                    {w.supporting_metric}:{" "}
+                    <strong>
+                      {typeof w.metric_value === "number"
+                        ? w.metric_value.toLocaleString()
+                        : w.metric_value}
+                    </strong>{" "}
+                    · Confidence: {formatEnumLabel(w.confidence)}
+                  </p>
+                </div>
+              </li>
+            ))}
+          </ul>
+        )}
+      </Panel>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Contest preparation
+// ---------------------------------------------------------------------------
+
+function useContestCountdown(targetIso: string) {
+  const [now, setNow] = React.useState(() => Date.now());
+  React.useEffect(() => {
+    const id = window.setInterval(() => setNow(Date.now()), 60_000);
+    return () => window.clearInterval(id);
+  }, []);
+  const diff = new Date(targetIso).getTime() - now;
+  if (diff <= 0) return "Live now";
+  const days = Math.floor(diff / 86_400_000);
+  const hours = Math.floor((diff % 86_400_000) / 3_600_000);
+  if (days > 0) return `in ${days}d ${hours}h`;
+  if (hours > 0) return `in ${hours}h ${Math.floor((diff % 3_600_000) / 60_000)}m`;
+  return `in ${Math.max(1, Math.floor(diff / 60_000))}m`;
+}
+
+function ContestPrepSection() {
+  const { data, isLoading, error, refetch } = useQuery({
+    queryKey: ["upcoming-contests"],
+    queryFn: () => getUpcomingContests(5),
+  });
+
+  return (
+    <Panel
+      title="Contest Preparation"
+      caption="Upcoming contests from your synced platforms"
+      action={
+        <span className="flex h-9 w-9 items-center justify-center rounded-full bg-yellow-soft">
+          <Trophy className="h-4 w-4" strokeWidth={1.6} />
+        </span>
+      }
+    >
+      {isLoading ? (
+        <SectionLoader rows={2} />
+      ) : error ? (
+        <ErrorState
+          title="Contests unavailable"
+          description="Contest data could not be loaded. It syncs from your connected platforms."
+          onRetry={() => refetch()}
+        />
+      ) : !data || data.length === 0 ? (
+        <EmptyState
+          icon={CalendarClock}
+          title="No upcoming contests"
+          description="No future contests are stored yet. Contest data is synced from your connected platforms — check back after your next sync."
+        />
+      ) : (
+        <ul className="grid gap-3 sm:grid-cols-2">
+          {data.map((contest) => (
+            <ContestRow key={contest.id} contest={contest} />
+          ))}
+        </ul>
+      )}
+    </Panel>
+  );
+}
+
+function ContestRow({
+  contest,
+}: {
+  contest: {
+    id: number;
+    title: string;
+    platform: string;
+    contest_url: string;
+    start_time: string;
+    duration_minutes: number;
+  };
+}) {
+  const countdown = useContestCountdown(contest.start_time);
+  return (
+    <li className="lift rounded-2xl border border-border bg-muted/40 p-4">
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <a
+            href={contest.contest_url}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="text-card-title flex items-center gap-1 truncate hover:text-violet"
+          >
+            {contest.title}
+            <ExternalLink className="h-3.5 w-3.5 shrink-0 opacity-60" />
+          </a>
+          <p className="text-label mt-1 text-subtle">
+            {contest.platform} ·{" "}
+            {new Date(contest.start_time).toLocaleString(undefined, {
+              dateStyle: "medium",
+              timeStyle: "short",
+            })}{" "}
+            · {contest.duration_minutes} min
+          </p>
+        </div>
+        <span className="text-label shrink-0 rounded-full bg-yellow-soft px-2.5 py-1 font-medium text-yellow">
+          {countdown}
+        </span>
       </div>
     </li>
   );
 }
 
-function WeaknessItem({
-  description,
-  metric_value,
-  supporting_metric,
-  confidence,
-}: {
-  description: string;
-  metric_value: number | string;
-  supporting_metric: string;
-  confidence: string;
-}) {
-  return (
-    <li className="flex items-start gap-3 rounded-2xl bg-pink-soft/30 p-3">
-      <Bot className="h-5 w-5 shrink-0 text-pink mt-0.5" strokeWidth={1.6} />
-      <div>
-        <p className="text-card-title">{description}</p>
-        <p className="text-caption mt-1 text-subtle">
-          {supporting_metric}: <strong>{metric_value}</strong> · Confidence: {confidence}
-        </p>
-      </div>
-    </li>
-  );
-}
+// ---------------------------------------------------------------------------
+// AI Chat
+// ---------------------------------------------------------------------------
 
 interface ChatMsg {
   role: "user" | "assistant";
   content: string;
 }
 
-// ---------------------------------------------------------------------------
-// Main Page
-// ---------------------------------------------------------------------------
+function suggestedQuestions(profile: PerformanceProfile | undefined): string[] {
+  const questions: string[] = [];
+  const weak = profile?.topic_performance?.find((t) => t.strength_level === "weak");
+  const moderate = profile?.topic_performance?.find(
+    (t) => t.strength_level === "moderate" && t.recent_activity === 0,
+  );
 
-function AICoach() {
+  if (weak) questions.push(`How can I improve my ${weak.topic} skills?`);
+  if (moderate) questions.push(`Should I revise ${moderate.topic}?`);
+  questions.push("What should I practice today?");
+  if ((profile?.contest_performance.contests_participated ?? 0) > 0) {
+    questions.push("How has my contest performance changed recently?");
+  } else if ((profile?.overview.solved_problems ?? 0) > 20) {
+    questions.push("Should I try a contest yet?");
+  }
+  questions.push("Create a seven-day revision plan.");
+  return questions.slice(0, 4);
+}
+
+function ChatSection({ profile }: { profile: PerformanceProfile | undefined }) {
   const queryClient = useQueryClient();
-
-  const {
-    data: recommendationsData,
-    isLoading: recommendationsLoading,
-    error: recommendationsError,
-    refetch: refetchRecommendations,
-  } = useQuery({
-    queryKey: ["recommendations"],
-    queryFn: getRecommendations,
-  });
-
-  const {
-    data: performanceData,
-    isLoading: performanceLoading,
-    refetch: refetchPerformance,
-  } = useQuery({
-    queryKey: ["performance-profile"],
-    queryFn: getPerformanceProfile,
-  });
-
-  const chatMutation = useMutation({
-    mutationFn: chatWithCoach,
-  });
-
-  const [agentFetchEnabled, setAgentFetchEnabled] = React.useState(false);
-
-  const {
-    data: agentData,
-    isLoading: agentLoading,
-    error: agentError,
-    refetch: refetchAgent,
-  } = useQuery({
-    queryKey: ["agent-recommendations"],
-    queryFn: getAgentRecommendations,
-    enabled: agentFetchEnabled,
-    retry: false,
-  });
+  const chatMutation = useMutation({ mutationFn: chatWithCoach });
 
   const [message, setMessage] = React.useState("");
   const [conversationHistory, setConversationHistory] = React.useState<ChatMsg[]>([]);
-  // Preserve the last failed user message so it can be retried.
   const [pendingUserMessage, setPendingUserMessage] = React.useState<string | null>(null);
-
   const chatScrollRef = React.useRef<HTMLDivElement>(null);
 
-  // Scroll to bottom whenever the conversation updates.
   React.useEffect(() => {
     if (chatScrollRef.current) {
       chatScrollRef.current.scrollTop = chatScrollRef.current.scrollHeight;
@@ -167,41 +664,43 @@ function AICoach() {
     const text = (overrideMessage ?? message).trim();
     if (!text || chatMutation.isPending) return;
 
-    // Optimistically add to history and clear input.
     if (!overrideMessage) setMessage("");
     setPendingUserMessage(null);
     chatMutation.reset();
 
-    const nextHistory: ChatMsg[] = [...conversationHistory, { role: "user", content: text }];
-    setConversationHistory(nextHistory);
+    const priorHistory = conversationHistory;
+    setConversationHistory([...priorHistory, { role: "user", content: text }]);
 
     chatMutation.mutate(
-      {
-        message: text,
-        // Send only the history that existed BEFORE this message.
-        conversation_history: conversationHistory,
-      },
+      { message: text, conversation_history: priorHistory },
       {
         onSuccess: (data) => {
-          setConversationHistory((prev) => [
-            ...prev,
-            { role: "assistant", content: data.response },
-          ]);
+          if (data.is_configured === false) {
+            // Provider not configured — keep the user message but show a
+            // system-style notice instead of a fabricated answer.
+            setConversationHistory((prev) => [
+              ...prev,
+              {
+                role: "assistant",
+                content:
+                  "AI Coach is not configured. Set GEMINI_API_KEY in the backend " +
+                  "environment to enable chat.",
+              },
+            ]);
+          } else {
+            setConversationHistory((prev) => [
+              ...prev,
+              { role: "assistant", content: data.response },
+            ]);
+          }
           setPendingUserMessage(null);
         },
         onError: () => {
-          // Remove the optimistically added user message and preserve it for retry.
-          setConversationHistory(conversationHistory);
+          setConversationHistory(priorHistory);
           setPendingUserMessage(text);
         },
       },
     );
-  };
-
-  const handleRetry = () => {
-    if (pendingUserMessage) {
-      handleSendMessage(pendingUserMessage);
-    }
   };
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
@@ -209,526 +708,140 @@ function AICoach() {
       e.preventDefault();
       handleSendMessage();
     }
-    // Shift+Enter: default textarea newline behaviour — no preventDefault needed.
   };
 
-  const handleRefreshAll = () => {
-    refetchRecommendations();
-    refetchPerformance();
-  };
+  const questions = suggestedQuestions(profile);
 
-  if (recommendationsLoading || performanceLoading) {
-    return (
-      <AppShell title="AI Coach" subtitle="Loading your personalized recommendations...">
-        <div className="flex items-center justify-center py-12">
-          <Loader2 className="h-8 w-8 animate-spin text-violet" />
-        </div>
-      </AppShell>
-    );
-  }
-
-  if (recommendationsError) {
-    return (
-      <AppShell title="AI Coach" subtitle="Unable to load recommendations">
-        <div className="flex flex-col items-center gap-4 py-12">
-          <AlertCircle className="h-8 w-8 text-pink" />
-          <p className="text-body text-muted-foreground">
-            Failed to load recommendations. Please try again.
-          </p>
-          <button
-            id="retry-recommendations-btn"
-            onClick={() => refetchRecommendations()}
-            className="flex items-center gap-2 rounded-2xl bg-violet px-4 py-2 text-caption font-medium text-white transition-colors hover:bg-violet/90"
+  return (
+    <Panel
+      title="Ask Your AI Coach"
+      caption="Powered by Gemini — answers are grounded in your actual backend performance data"
+    >
+      <div className="space-y-4">
+        {(conversationHistory.length > 0 || chatMutation.isPending) && (
+          <div
+            ref={chatScrollRef}
+            className="max-h-96 space-y-3 overflow-y-auto rounded-2xl bg-muted/50 p-4"
           >
-            <RefreshCw className="h-4 w-4" />
-            Retry
+            {conversationHistory.map((msg, index) => (
+              <div
+                key={index}
+                className={cn(
+                  "rounded-2xl p-3",
+                  msg.role === "user"
+                    ? "ml-auto max-w-[80%] bg-violet-soft"
+                    : "mr-auto max-w-[85%] bg-card",
+                )}
+              >
+                {msg.role === "assistant" ? (
+                  <Markdown content={msg.content} />
+                ) : (
+                  <p className="text-body whitespace-pre-wrap">{msg.content}</p>
+                )}
+              </div>
+            ))}
+
+            {chatMutation.isPending && (
+              <div className="flex items-center gap-2 text-subtle">
+                <Loader2 className="h-4 w-4 animate-spin" />
+                <span className="text-caption">Thinking…</span>
+              </div>
+            )}
+          </div>
+        )}
+
+        {chatMutation.isError && pendingUserMessage && (
+          <div className="flex items-center justify-between gap-3 rounded-2xl border border-pink-soft bg-pink-soft/20 px-4 py-3">
+            <div className="flex items-center gap-2 text-pink">
+              <AlertCircle className="h-4 w-4 shrink-0" />
+              <span className="text-caption">
+                Message failed to send — the AI provider may be temporarily unavailable. Your
+                message is preserved.
+              </span>
+            </div>
+            <button
+              onClick={() => handleSendMessage(pendingUserMessage)}
+              className="flex shrink-0 items-center gap-1.5 rounded-xl bg-pink px-3 py-1.5 text-caption font-medium text-white transition-colors hover:bg-pink/90"
+            >
+              <RotateCcw className="h-3.5 w-3.5" />
+              Retry
+            </button>
+          </div>
+        )}
+
+        {conversationHistory.length === 0 && !chatMutation.isPending && (
+          <div className="flex flex-wrap gap-2">
+            {questions.map((question) => (
+              <button
+                key={question}
+                onClick={() => {
+                  setMessage(question);
+                  handleSendMessage(question);
+                }}
+                className="rounded-full border border-border bg-muted/50 px-3 py-1.5 text-caption text-subtle transition-colors hover:bg-muted"
+              >
+                {question}
+              </button>
+            ))}
+          </div>
+        )}
+
+        <div className="flex gap-2">
+          <textarea
+            id="ai-coach-message-input"
+            value={message}
+            onChange={(e) => setMessage(e.target.value)}
+            onKeyDown={handleKeyDown}
+            placeholder="Ask about your performance, strengths, weaknesses, or request a study plan… (Enter to send, Shift+Enter for newline)"
+            className="flex-1 resize-none rounded-2xl border border-border bg-background px-4 py-3 text-caption outline-none focus:border-violet"
+            rows={2}
+            disabled={chatMutation.isPending}
+          />
+          <button
+            id="ai-coach-send-btn"
+            onClick={() => handleSendMessage()}
+            disabled={!message.trim() || chatMutation.isPending}
+            className="flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl bg-violet text-white transition-colors hover:bg-violet/90 disabled:cursor-not-allowed disabled:opacity-50"
+            title="Send message"
+          >
+            {chatMutation.isPending ? (
+              <Loader2 className="h-5 w-5 animate-spin" />
+            ) : (
+              <Send className="h-5 w-5" />
+            )}
           </button>
         </div>
-      </AppShell>
-    );
-  }
+      </div>
+    </Panel>
+  );
+}
 
-  const recommendations = recommendationsData?.recommendations ?? [];
-  const hasSufficientData = recommendationsData?.has_sufficient_data ?? false;
-  const dataQuality = recommendationsData?.data_quality;
+// ---------------------------------------------------------------------------
+// Main Page
+// ---------------------------------------------------------------------------
 
+function AICoach() {
+  // Performance profile is fetched once here for suggested chat questions;
+  // each section below owns its own query state so one failure can't take
+  // down the whole page.
+  const { data: performanceData } = useQuery({
+    queryKey: ["performance-profile"],
+    queryFn: getPerformanceProfile,
+  });
   const profile = performanceData?.profile;
-  const strengths = profile?.strengths ?? [];
-  const weaknesses = profile?.weaknesses ?? [];
 
   return (
     <AppShell
       title="AI Coach"
-      subtitle="Personalized recommendations based on your actual performance data."
+      subtitle="Personalized recommendations and coaching grounded in your real performance data."
     >
       <div className="space-y-6">
-        {/* StudyPlanCard uses static placeholder data — not AI-generated. */}
-        <StudyPlanCard />
-
-        {!hasSufficientData ? (
-          <Panel
-            title="Insufficient Data"
-            caption="Sync your platforms to get personalized recommendations"
-          >
-            <p className="text-body text-muted-foreground">
-              We need more of your practice data to generate meaningful recommendations. Please sync
-              your Codeforces or LeetCode profile to get started.
-            </p>
-          </Panel>
-        ) : (
-          <>
-            {/* Data quality notice */}
-            {dataQuality &&
-              (!dataQuality.has_topic_data ||
-                !dataQuality.has_contest_data ||
-                dataQuality.locally_tagged_solved < dataQuality.profile_reported_solved) && (
-                <div className="rounded-2xl border border-yellow-soft bg-yellow-soft/20 px-4 py-3 text-caption text-yellow-700">
-                  <strong>Note:</strong> Some data may be incomplete.
-                  {!dataQuality.has_topic_data && " No topic data is available."}
-                  {!dataQuality.has_contest_data && " No contest data is available."}
-                  {dataQuality.locally_tagged_solved < dataQuality.profile_reported_solved &&
-                    ` Only ${dataQuality.locally_tagged_solved} of ${dataQuality.profile_reported_solved} solved problems have topic tags.`}
-                </div>
-              )}
-
-            {/* Recommendations */}
-            <Panel
-              title="Personalized Recommendations"
-              caption="Based on your actual performance data — not AI-generated text"
-              action={
-                <button
-                  id="refresh-recommendations-btn"
-                  onClick={handleRefreshAll}
-                  className="flex h-9 w-9 items-center justify-center rounded-full bg-violet-soft text-violet transition-colors hover:bg-violet-soft/80"
-                  title="Refresh recommendations and performance data"
-                >
-                  <RefreshCw className="h-4 w-4" strokeWidth={1.6} />
-                </button>
-              }
-            >
-              {recommendations.length === 0 ? (
-                <p className="text-body text-muted-foreground">
-                  No recommendations available at this time. Keep practicing to get personalized
-                  suggestions!
-                </p>
-              ) : (
-                <ul className="space-y-4">
-                  {recommendations.map((rec, index) => (
-                    <li
-                      key={index}
-                      className="lift group rounded-2xl border border-border bg-muted/50 p-5"
-                    >
-                      <div className="flex items-start justify-between gap-3">
-                        <div className="flex-1">
-                          <div className="mb-2 flex items-center gap-2">
-                            <span
-                              className={`text-label rounded-full px-2 py-0.5 text-xs font-medium ${
-                                rec.priority === "high"
-                                  ? "bg-pink-soft text-pink"
-                                  : rec.priority === "medium"
-                                    ? "bg-yellow-soft text-yellow"
-                                    : "bg-green-soft text-green"
-                              }`}
-                            >
-                              {rec.priority.toUpperCase()}
-                            </span>
-                            <span className="text-label text-subtle uppercase">{rec.category}</span>
-                          </div>
-                          <p className="text-card-title">{rec.title}</p>
-                          <p className="text-body mt-2 text-muted-foreground">{rec.reason}</p>
-                          <p className="text-caption mt-3 text-subtle">
-                            <strong>Suggested:</strong> {rec.suggested_activity}
-                          </p>
-                          <p className="text-caption mt-1 text-subtle">
-                            <strong>Target:</strong> {rec.target_metric}
-                          </p>
-                        </div>
-                      </div>
-                    </li>
-                  ))}
-                </ul>
-              )}
-            </Panel>
-
-            {/* AI Problem Recommendations — lazy, only fetched when user clicks */}
-            <Panel
-              title="AI Problem Recommendations"
-              caption="Powered by Gemini — searches your problem catalog for real, unsolved problems"
-              action={
-                agentData && (
-                  <button
-                    onClick={() => refetchAgent()}
-                    className="flex h-9 w-9 items-center justify-center rounded-full bg-violet-soft text-violet transition-colors hover:bg-violet-soft/80"
-                    title="Reconsider recommendations"
-                  >
-                    <RefreshCw className="h-4 w-4" strokeWidth={1.6} />
-                  </button>
-                )
-              }
-            >
-              {!agentFetchEnabled && !agentData ? (
-                <div className="flex flex-col items-center gap-4 py-6">
-                  <p className="text-body text-muted-foreground text-center max-w-md">
-                    Let Gemini analyse your profile and find specific problems you should solve next
-                    — pulled from your actual problem catalog.
-                  </p>
-                  <button
-                    onClick={() => setAgentFetchEnabled(true)}
-                    className="flex items-center gap-2 rounded-2xl bg-violet px-5 py-2.5 text-caption font-medium text-white transition-colors hover:bg-violet/90"
-                  >
-                    <Sparkles className="h-4 w-4" />
-                    Get AI Recommendations
-                  </button>
-                </div>
-              ) : agentLoading ? (
-                <div className="flex flex-col items-center gap-3 py-8">
-                  <Loader2 className="h-7 w-7 animate-spin text-violet" />
-                  <p className="text-body text-muted-foreground text-center">
-                    AI agent is analysing your profile and searching for problems…
-                  </p>
-                </div>
-              ) : agentError ? (
-                <div className="flex flex-col items-center gap-4 py-6">
-                  <AlertCircle className="h-7 w-7 text-pink" />
-                  <p className="text-body text-muted-foreground">
-                    Failed to get AI recommendations. Please try again.
-                  </p>
-                  <button
-                    onClick={() => refetchAgent()}
-                    className="flex items-center gap-2 rounded-2xl bg-violet px-4 py-2 text-caption font-medium text-white transition-colors hover:bg-violet/90"
-                  >
-                    <RefreshCw className="h-4 w-4" />
-                    Retry
-                  </button>
-                </div>
-              ) : agentData && !agentData.is_configured ? (
-                <div className="rounded-2xl bg-muted/50 p-4">
-                  <p className="text-body text-muted-foreground">
-                    AI recommendations are not configured. Set{" "}
-                    <code className="font-mono">GEMINI_API_KEY</code> in the backend environment to
-                    enable this feature.
-                  </p>
-                </div>
-              ) : agentData && agentData.error && agentData.recommendations.length === 0 ? (
-                <div className="flex flex-col items-center gap-4 py-6">
-                  <AlertCircle className="h-7 w-7 text-pink" />
-                  <p className="text-body text-muted-foreground text-center max-w-md">
-                    AI recommendations failed: {agentData.error}
-                  </p>
-                  <button
-                    onClick={() => refetchAgent()}
-                    className="flex items-center gap-2 rounded-2xl bg-violet px-4 py-2 text-caption font-medium text-white transition-colors hover:bg-violet/90"
-                  >
-                    <RefreshCw className="h-4 w-4" />
-                    Retry
-                  </button>
-                </div>
-              ) : agentData &&
-                !agentData.has_sufficient_data &&
-                agentData.recommendations.length === 0 ? (
-                <div className="rounded-2xl bg-muted/50 p-4">
-                  <p className="text-body text-muted-foreground">
-                    Not enough practice data to generate meaningful recommendations yet. Sync more
-                    submissions to get started.
-                  </p>
-                  {agentData.error && (
-                    <p className="text-caption text-pink mt-2">{agentData.error}</p>
-                  )}
-                </div>
-              ) : agentData ? (
-                <div className="space-y-4">
-                  {agentData.catalog_limited && (
-                    <div className="rounded-2xl border border-yellow-soft bg-yellow-soft/20 px-4 py-3 text-caption text-yellow-700">
-                      <strong>Catalog note:</strong> The problem catalog is limited to problems
-                      synced from your submission history. Sync more submissions to expand the
-                      catalog.
-                    </div>
-                  )}
-
-                  {agentData.agent_reasoning && (
-                    <div className="rounded-2xl bg-violet-soft/30 px-4 py-3">
-                      <p className="text-caption text-subtle">{agentData.agent_reasoning}</p>
-                    </div>
-                  )}
-
-                  {agentData.recommendations.length === 0 ? (
-                    <p className="text-body text-muted-foreground">
-                      No candidate problems found in the catalog. Try syncing more submissions.
-                    </p>
-                  ) : (
-                    <ul className="space-y-4">
-                      {agentData.recommendations.slice(0, 5).map((rec, index) => (
-                        <li
-                          key={index}
-                          className="lift group rounded-2xl border border-border bg-muted/50 p-5"
-                        >
-                          <div className="flex items-start justify-between gap-3">
-                            <div className="flex-1 min-w-0">
-                              <div className="mb-2 flex flex-wrap items-center gap-2">
-                                {/* Priority badge */}
-                                <span className="text-label rounded-full bg-violet-soft px-2 py-0.5 text-xs font-medium text-violet">
-                                  #{rec.priority}
-                                </span>
-                                {/* Platform badge */}
-                                <span
-                                  className={`text-label rounded-full px-2 py-0.5 text-xs font-medium ${
-                                    rec.platform === "leetcode"
-                                      ? "bg-yellow-soft text-yellow-700"
-                                      : "bg-blue-100 text-blue-700"
-                                  }`}
-                                >
-                                  {rec.platform}
-                                </span>
-                                {/* Difficulty badge */}
-                                {rec.difficulty && (
-                                  <span
-                                    className={`text-label rounded-full px-2 py-0.5 text-xs font-medium ${
-                                      rec.difficulty === "Easy"
-                                        ? "bg-green-soft text-green"
-                                        : rec.difficulty === "Medium"
-                                          ? "bg-yellow-soft text-yellow"
-                                          : "bg-pink-soft text-pink"
-                                    }`}
-                                  >
-                                    {rec.difficulty}
-                                  </span>
-                                )}
-                                {/* Solve status */}
-                                <span className="text-label text-xs text-subtle">
-                                  {rec.likely_unsolved
-                                    ? "Likely unsolved"
-                                    : "Solve status uncertain"}
-                                </span>
-                              </div>
-
-                              {/* Title linked to problem URL */}
-                              <a
-                                href={rec.url}
-                                target="_blank"
-                                rel="noopener noreferrer"
-                                className="text-card-title hover:text-violet transition-colors flex items-center gap-1 group/link"
-                              >
-                                {rec.title}
-                                <ExternalLink className="h-3.5 w-3.5 opacity-0 group-hover/link:opacity-100 transition-opacity shrink-0" />
-                              </a>
-
-                              {/* Topics */}
-                              {rec.topics.length > 0 && (
-                                <div className="mt-2 flex flex-wrap gap-1.5">
-                                  {rec.topics.slice(0, 5).map((topic) => (
-                                    <span
-                                      key={topic}
-                                      className="rounded-full bg-muted px-2 py-0.5 text-xs text-subtle"
-                                    >
-                                      {topic}
-                                    </span>
-                                  ))}
-                                </div>
-                              )}
-
-                              {/* Agent reason */}
-                              <p className="text-body mt-3 text-muted-foreground">{rec.reason}</p>
-                            </div>
-                          </div>
-                        </li>
-                      ))}
-                    </ul>
-                  )}
-
-                  {agentData.error && (
-                    <p className="text-caption text-subtle mt-2">Note: {agentData.error}</p>
-                  )}
-
-                  <div className="flex items-center justify-between">
-                    <p className="text-caption text-subtle">
-                      {agentData.tool_calls_made.length} tool call
-                      {agentData.tool_calls_made.length !== 1 ? "s" : ""} made
-                    </p>
-                    <button
-                      onClick={() => refetchAgent()}
-                      className="flex items-center gap-2 rounded-2xl border border-border px-4 py-2 text-caption font-medium text-subtle transition-colors hover:bg-muted"
-                    >
-                      <RefreshCw className="h-3.5 w-3.5" />
-                      Reconsider
-                    </button>
-                  </div>
-                </div>
-              ) : null}
-            </Panel>
-
-            {/* Strengths and Weaknesses */}
-            {profile && (profile.strengths.length > 0 || profile.weaknesses.length > 0) && (
-              <div className="grid gap-6 xl:grid-cols-2">
-                <Panel
-                  title="Strengths"
-                  caption="Patterns derived from your actual submission data"
-                  action={
-                    <span className="flex h-9 w-9 items-center justify-center rounded-full bg-green-soft">
-                      <BrainCircuit className="h-4 w-4" strokeWidth={1.6} />
-                    </span>
-                  }
-                >
-                  {profile.strengths.length > 0 ? (
-                    <ul className="space-y-3">
-                      {profile.strengths.slice(0, 3).map((s, index) => (
-                        <StrengthItem
-                          key={index}
-                          description={s.description}
-                          metric_value={s.metric_value}
-                          supporting_metric={s.supporting_metric}
-                        />
-                      ))}
-                    </ul>
-                  ) : (
-                    <p className="text-body text-muted-foreground">
-                      No strengths identified yet. Keep practicing to build your profile!
-                    </p>
-                  )}
-                </Panel>
-
-                <Panel
-                  title="Weaknesses"
-                  caption="Areas for improvement — based on your actual data"
-                  action={
-                    <span className="flex h-9 w-9 items-center justify-center rounded-full bg-pink-soft">
-                      <Bot className="h-4 w-4" strokeWidth={1.6} />
-                    </span>
-                  }
-                >
-                  {profile.weaknesses.length > 0 ? (
-                    <ul className="space-y-3">
-                      {profile.weaknesses.slice(0, 3).map((w, index) => (
-                        <WeaknessItem
-                          key={index}
-                          description={w.description}
-                          metric_value={w.metric_value}
-                          supporting_metric={w.supporting_metric}
-                          confidence={w.confidence}
-                        />
-                      ))}
-                    </ul>
-                  ) : (
-                    <p className="text-body text-muted-foreground">
-                      No weaknesses identified. Great job maintaining balance across topics!
-                    </p>
-                  )}
-                </Panel>
-              </div>
-            )}
-
-            {/* AI Chat */}
-            <Panel
-              title="Ask Your AI Coach"
-              caption="Powered by Gemini — grounded in your actual backend performance data"
-            >
-              <div className="space-y-4">
-                {/* Conversation */}
-                {(conversationHistory.length > 0 || chatMutation.isPending) && (
-                  <div
-                    ref={chatScrollRef}
-                    className="max-h-96 space-y-3 overflow-y-auto rounded-2xl bg-muted/50 p-4"
-                  >
-                    {conversationHistory.map((msg, index) => (
-                      <div
-                        key={index}
-                        className={`rounded-2xl p-3 ${
-                          msg.role === "user"
-                            ? "bg-violet-soft ml-auto max-w-[80%]"
-                            : "bg-muted mr-auto max-w-[80%]"
-                        }`}
-                      >
-                        <p className="text-body whitespace-pre-wrap">{msg.content}</p>
-                      </div>
-                    ))}
-
-                    {chatMutation.isPending && (
-                      <div className="flex items-center gap-2 text-subtle">
-                        <Loader2 className="h-4 w-4 animate-spin" />
-                        <span className="text-caption">Thinking…</span>
-                      </div>
-                    )}
-                  </div>
-                )}
-
-                {/* Error state with retry */}
-                {chatMutation.isError && pendingUserMessage && (
-                  <div className="flex items-center justify-between gap-3 rounded-2xl border border-pink-soft bg-pink-soft/20 px-4 py-3">
-                    <div className="flex items-center gap-2 text-pink">
-                      <AlertCircle className="h-4 w-4 shrink-0" />
-                      <span className="text-caption">
-                        Message failed to send. Your message is preserved.
-                      </span>
-                    </div>
-                    <button
-                      id="retry-chat-btn"
-                      onClick={handleRetry}
-                      className="flex shrink-0 items-center gap-1.5 rounded-xl bg-pink px-3 py-1.5 text-caption font-medium text-white transition-colors hover:bg-pink/90"
-                    >
-                      <RotateCcw className="h-3.5 w-3.5" />
-                      Retry
-                    </button>
-                  </div>
-                )}
-
-                {/* Suggested questions (only when no conversation yet) */}
-                {conversationHistory.length === 0 && !chatMutation.isPending && (
-                  <div className="flex flex-wrap gap-2">
-                    {[
-                      "What should I practice today?",
-                      "What are my weak topics?",
-                      "How has my performance changed recently?",
-                      "Create a seven-day revision plan.",
-                    ].map((question) => (
-                      <button
-                        key={question}
-                        onClick={() => setMessage(question)}
-                        className="rounded-full border border-border bg-muted/50 px-3 py-1.5 text-caption text-subtle transition-colors hover:bg-muted"
-                      >
-                        {question}
-                      </button>
-                    ))}
-                  </div>
-                )}
-
-                {/* Unconfigured notice (after first response reveals it) */}
-                {chatMutation.data?.is_configured === false && (
-                  <p className="text-caption text-subtle rounded-2xl bg-muted/50 p-3">
-                    AI Coach is not configured. Set{" "}
-                    <code className="font-mono">GEMINI_API_KEY</code> in the backend environment to
-                    enable chat.
-                  </p>
-                )}
-
-                {/* Input */}
-                <div className="flex gap-2">
-                  <textarea
-                    id="ai-coach-message-input"
-                    value={message}
-                    onChange={(e) => setMessage(e.target.value)}
-                    onKeyDown={handleKeyDown}
-                    placeholder="Ask about your performance, strengths, weaknesses, or request a study plan… (Enter to send, Shift+Enter for newline)"
-                    className="flex-1 rounded-2xl border border-border bg-background px-4 py-3 text-caption outline-none focus:border-violet resize-none"
-                    rows={2}
-                    disabled={chatMutation.isPending}
-                  />
-                  <button
-                    id="ai-coach-send-btn"
-                    onClick={() => handleSendMessage()}
-                    disabled={!message.trim() || chatMutation.isPending}
-                    className="flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl bg-violet text-white transition-colors hover:bg-violet/90 disabled:opacity-50 disabled:cursor-not-allowed"
-                    title="Send message"
-                  >
-                    {chatMutation.isPending ? (
-                      <Loader2 className="h-5 w-5 animate-spin" />
-                    ) : (
-                      <Send className="h-5 w-5" />
-                    )}
-                  </button>
-                </div>
-              </div>
-            </Panel>
-          </>
-        )}
+        <StudyPlanSection />
+        <RecommendationsSection />
+        <AgentRecommendationsSection />
+        <StrengthsWeaknessesSection />
+        <ContestPrepSection />
+        <ChatSection profile={profile} />
       </div>
     </AppShell>
   );

@@ -50,6 +50,15 @@ Add these to your backend environment (`.env` file in the `backend/` directory):
 # Get your API key from: https://makersuite.google.com/app/apikey
 GEMINI_API_KEY=your-gemini-api-key-here
 GEMINI_MODEL=gemini-3.5-flash
+# Optional fallback model tried when the primary is unavailable (503/404).
+# Must be verified against BOTH generate_content (agent) and
+# interactions.create (chat) before enabling. Leave unset to disable.
+# GEMINI_FALLBACK_MODEL=
+# Bounded retries with exponential backoff + jitter for transient errors.
+# GEMINI_MAX_RETRIES=2
+# GEMINI_RETRY_BASE_DELAY_SECONDS=0.5
+# GEMINI_RETRY_MAX_DELAY_SECONDS=8.0
+# GEMINI_TIMEOUT_SECONDS=30
 ```
 
 ### How to Get a Gemini API Key
