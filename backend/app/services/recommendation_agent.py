@@ -407,6 +407,9 @@ class RecommendationAgent:
         self._max_delay = float(cap) if isinstance(cap, (int, float)) else 8.0
 
         self._dispatcher = ToolDispatcher(db, user_id)
+        # Token usage from the most recent successful generate_content call,
+        # when the provider returns it. Used by the eval harness.
+        self.last_usage: Optional[dict] = None
 
     def is_configured(self) -> bool:
         """Return True when an API key is present and the client is ready."""
@@ -613,6 +616,7 @@ class RecommendationAgent:
                         attempt,
                         (time.monotonic() - start) * 1000,
                     )
+                    self.last_usage = self._extract_usage(response)
                     return response
                 except Exception as exc:
                     duration_ms = (time.monotonic() - start) * 1000
@@ -658,6 +662,19 @@ class RecommendationAgent:
                 kind=KIND_UNKNOWN,
             )
         raise provider_error
+
+    @staticmethod
+    def _extract_usage(response: Any) -> Optional[dict]:
+        """Best-effort extraction of token usage from a generate_content response."""
+        usage = getattr(response, "usage_metadata", None)
+        if usage is None:
+            return None
+        out: dict = {}
+        for key in ("prompt_token_count", "candidates_token_count", "total_token_count"):
+            value = getattr(usage, key, None)
+            if value is not None:
+                out[key] = int(value)
+        return out or None
 
     def _extract_text(self, response: Any) -> str:
         """Extract text from a generate_content response.
