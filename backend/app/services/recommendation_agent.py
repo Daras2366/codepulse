@@ -300,6 +300,62 @@ _TOOL_DECLARATIONS = [
 ]
 
 # ---------------------------------------------------------------------------
+# Structured output schema
+# ---------------------------------------------------------------------------
+#
+# The final answer is constrained by Gemini's response schema
+# (response_mime_type="application/json" + response_schema) instead of relying
+# on prompt instructions plus fence-stripping. The google-genai SDK accepts
+# response_schema together with function declarations in the same
+# GenerateContentConfig (verified against the live API), so the schema is
+# applied to every turn of the loop: tool-call turns are unaffected (they
+# emit function_call parts, not text) and the final text turn is guaranteed
+# to be schema-conformant JSON. _parse_final_response remains as a fallback
+# for any non-conformant text.
+
+_FINAL_RESPONSE_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "recommendations": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "problem_id": {"type": "integer", "nullable": True},
+                    "title": {"type": "string"},
+                    "platform": {"type": "string"},
+                    "difficulty": {"type": "string", "nullable": True},
+                    "url": {"type": "string"},
+                    "topics": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                    },
+                    "reason": {"type": "string"},
+                    "priority": {"type": "integer"},
+                    "likely_unsolved": {"type": "boolean"},
+                },
+                "required": [
+                    "problem_id",
+                    "title",
+                    "platform",
+                    "difficulty",
+                    "url",
+                    "topics",
+                    "reason",
+                    "priority",
+                    "likely_unsolved",
+                ],
+            },
+        },
+        "reasoning": {"type": "string"},
+        "has_sufficient_data": {"type": "boolean"},
+        "catalog_limited": {"type": "boolean"},
+    },
+    "required": ["recommendations", "reasoning", "has_sufficient_data"],
+}
+
+
+# ---------------------------------------------------------------------------
 # System prompt
 # ---------------------------------------------------------------------------
 
@@ -325,26 +381,19 @@ real practice problems to the user based on their actual performance data.
 - Prioritise problems in topics where the user is "weak" or "moderate" strength.
 - Match difficulty to the user's level (do not recommend Hard problems to beginners).
 
-## Final Response Format
+## Final Response
 
-Respond with ONLY valid JSON in this exact structure (no markdown fences, no extra text):
-{
-  "recommendations": [
-    {
-      "problem_id": <int or null>,
-      "title": "<exact title from DB>",
-      "platform": "<platform>",
-      "difficulty": "<difficulty or null>",
-      "url": "<exact URL from DB>",
-      "topics": ["<topic1>", "<topic2>"],
-      "reason": "<2-3 sentence explanation of why this problem is recommended>",
-      "priority": <1-5, 1=highest>,
-      "likely_unsolved": true
-    }
-  ],
-  "reasoning": "<brief paragraph summarising what you found about the user's profile and why these problems were chosen>",
-  "has_sufficient_data": <true or false>
-}
+Your final answer is returned as structured JSON automatically. Fill in:
+- "recommendations": 3-5 objects, each with "problem_id" (the DB id from \
+search_candidate_problems, or null), "title", "platform", "difficulty" \
+(or null), "url", "topics", "reason" (2-3 sentences on why this problem \
+fits the user), "priority" (1 = highest), and "likely_unsolved": true.
+- "reasoning": a brief paragraph summarising what you found about the \
+user's profile and why these problems were chosen.
+- "has_sufficient_data": true if the user has enough history to base \
+recommendations on, false otherwise.
+- "catalog_limited": true only if fewer than 5 candidate problems exist \
+in the catalog.
 """
 
 
@@ -496,6 +545,8 @@ class RecommendationAgent:
             automatic_function_calling=types.AutomaticFunctionCallingConfig(
                 disable=True
             ),
+            response_mime_type="application/json",
+            response_schema=_FINAL_RESPONSE_SCHEMA,
         )
 
         for iteration in range(_MAX_ITERATIONS):
@@ -566,6 +617,8 @@ class RecommendationAgent:
                 system_instruction=_SYSTEM_PROMPT,
                 temperature=0.4,
                 max_output_tokens=2000,
+                response_mime_type="application/json",
+                response_schema=_FINAL_RESPONSE_SCHEMA,
             )
             final_response = self._generate_content(contents, final_config)
             text = self._extract_text(final_response)
@@ -704,6 +757,11 @@ class RecommendationAgent:
         self, text: str, tool_calls_made: list[str]
     ) -> AgentRecommendationResult:
         """Parse the model's final JSON text response into an AgentRecommendationResult.
+
+        Fallback path: the primary contract is the response schema
+        (response_mime_type + response_schema), but if the model still emits
+        non-conformant text this parser handles plain JSON, markdown fences,
+        and JSON embedded in prose.
 
         Args:
             text: Raw text from the model.
