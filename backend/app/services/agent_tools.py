@@ -18,6 +18,8 @@ from typing import Optional
 from sqlalchemy import func, distinct, select
 from sqlalchemy.orm import Session
 
+from app.models.enums import Difficulty as DifficultyEnum
+from app.models.enums import Platform as PlatformEnum
 from app.models.enums import SubmissionStatus
 from app.models.goal import Goal
 from app.models.platform_profile import PlatformProfile
@@ -25,6 +27,13 @@ from app.models.problem import Problem
 from app.models.problem_topic import ProblemTopic
 from app.models.submission import Submission
 from app.models.topic import Topic
+from app.services.candidate_ranker import (
+    CANDIDATE_POOL_LIMIT,
+    allowed_difficulty_band,
+    build_user_context,
+    score_candidate,
+    select_diverse,
+)
 from app.services.performance_analyzer import PerformanceAnalyzer
 
 logger = logging.getLogger(__name__)
@@ -316,22 +325,35 @@ def search_candidate_problems(
     Strategy:
     1. Find all problem IDs the user has ACCEPTED submissions for.
     2. Query the Problem table for problems NOT in that set.
-    3. Optionally filter by topic, difficulty, and platform.
-    4. Order by acceptance_rate DESC (more solvable problems first).
-    5. Annotate with unsolved_confidence: "confirmed" if never attempted,
+    3. Apply platform filter; apply the caller's difficulty filter, or —
+       when none is passed — default to the user's difficulty band derived
+       from their solved count (<20 → Easy, 20-99 → Easy+Medium,
+       100+ → all).
+    4. Score every candidate with candidate_ranker (weak-topic fit,
+       difficulty fit, staleness, solvability, recent-failure penalty) and
+       select the shortlist with a greedy per-topic diversity penalty.
+    5. When ``topic`` is given, topic-matching problems are selected first;
+       any remaining slots are topped up with the next-best-scored
+       candidates overall — never with unfiltered-by-score results.
+    6. Annotate with unsolved_confidence: "confirmed" if never attempted,
        "probable" if attempted but not accepted.
 
     Args:
         db: SQLAlchemy session.
         user_id: Authenticated user's ID (never from model output).
-        topic: Optional topic name filter (e.g. "Dynamic Programming").
-        difficulty: Optional difficulty filter ("Easy"/"Medium"/"Hard").
+        topic: Optional topic name preference (e.g. "Dynamic Programming").
+               Matching problems rank first; non-matching problems may fill
+               remaining slots when the catalog has too few matches.
+        difficulty: Optional difficulty filter ("Easy"/"Medium"/"Hard" or
+               Codeforces rating 1-5). When omitted, the user's difficulty
+               band is applied automatically.
         platform: Optional platform filter ("leetcode"/"codeforces").
         limit: Max problems to return (1-20).
 
     Returns:
-        Dict with key "problems" (list of problem dicts) and optional
-        "catalog_limited" flag if fewer than 5 candidates were found.
+        Dict with key "problems" (list of problem dicts, each with "score"
+        and "score_breakdown") and optional "catalog_limited" flag if fewer
+        than 5 candidates were found.
     """
     # Validate inputs
     valid_difficulties = {
@@ -366,6 +388,10 @@ def search_candidate_problems(
     # Attempted but not solved = only-attempted
     only_attempted_ids = attempted_ids - solved_ids
 
+    # Build the per-user ranking context (topic weakness, staleness,
+    # recent failures). All queries inside are scoped by user_id.
+    rank_ctx = build_user_context(db, user_id, solved_ids, only_attempted_ids)
+
     # Build base query for unsolved problems
     query = db.query(Problem).filter(
         Problem.id.notin_(solved_ids) if solved_ids else True
@@ -373,16 +399,13 @@ def search_candidate_problems(
 
     # Apply platform filter
     if platform is not None:
-        from app.models.enums import Platform as PlatformEnum
-        try:
-            platform_enum = PlatformEnum(platform)
-            query = query.filter(Problem.platform == platform_enum)
-        except ValueError:
-            pass
+        query = query.filter(Problem.platform == PlatformEnum(platform))
 
-    # Apply difficulty filter
-    if difficulty is not None:
-        from app.models.enums import Difficulty as DifficultyEnum
+    # Apply difficulty filter: explicit caller choice wins; otherwise default
+    # to the user's solved-count band so beginners are not handed Hard
+    # problems (and intermediates are not handed only Easy ones).
+    explicit_difficulty = difficulty is not None
+    if explicit_difficulty:
         # Map numeric ratings to difficulty levels for Codeforces
         difficulty_map = {
             "1": DifficultyEnum.EASY,
@@ -395,41 +418,86 @@ def search_candidate_problems(
             query = query.filter(Problem.difficulty == difficulty_map[difficulty])
         else:
             try:
-                diff_enum = DifficultyEnum(difficulty)
-                query = query.filter(Problem.difficulty == diff_enum)
+                query = query.filter(Problem.difficulty == DifficultyEnum(difficulty))
             except ValueError:
                 pass
+    else:
+        band = allowed_difficulty_band(len(solved_ids))
+        query = query.filter(Problem.difficulty.in_(band))
 
-    # Apply topic filter via join
-    if topic is not None:
-        query = (
-            query
-            .join(ProblemTopic, ProblemTopic.problem_id == Problem.id)
-            .join(Topic, Topic.id == ProblemTopic.topic_id)
-            .filter(Topic.name.ilike(f"%{topic}%"))
-        )
-
-    # Order by acceptance rate descending (more solvable first), None last
-    query = query.order_by(
-        Problem.acceptance_rate.desc().nullslast()
-        if hasattr(Problem.acceptance_rate, "desc")
-        else Problem.acceptance_rate.desc()
+    # Fetch the scoring pool. The topic filter is deliberately NOT applied
+    # in SQL: matching is decided in Python so non-matching candidates can
+    # still fill leftover slots by score (see selection below).
+    problems_raw = (
+        query.order_by(Problem.id)
+        .limit(CANDIDATE_POOL_LIMIT)
+        .all()
     )
 
-    problems_raw = query.limit(limit).all()
-    catalog_limited = len(problems_raw) < 5
+    # Batch-fetch topics for the whole pool (one query, no N+1).
+    pool_ids = [p.id for p in problems_raw]
+    topic_rows = (
+        db.query(ProblemTopic.problem_id, Topic.name)
+        .join(Topic, Topic.id == ProblemTopic.topic_id)
+        .filter(ProblemTopic.problem_id.in_(pool_ids))
+        .all()
+        if pool_ids
+        else []
+    )
+    topics_by_problem: dict[int, list[str]] = {}
+    for problem_id, topic_name in topic_rows:
+        topics_by_problem.setdefault(problem_id, []).append(topic_name)
 
-    # For each problem, fetch its topics
-    problems_out = []
+    # Score every candidate in the pool.
+    scored = []
     for prob in problems_raw:
-        # Fetch topics
-        topic_rows = (
-            db.query(Topic.name)
-            .join(ProblemTopic, ProblemTopic.topic_id == Topic.id)
-            .filter(ProblemTopic.problem_id == prob.id)
-            .all()
+        diff_enum = prob.difficulty
+        if not isinstance(diff_enum, DifficultyEnum):
+            try:
+                diff_enum = DifficultyEnum(diff_enum) if diff_enum else None
+            except ValueError:
+                diff_enum = None
+
+        scored.append(
+            score_candidate(
+                problem_id=prob.id,
+                topics=topics_by_problem.get(prob.id, []),
+                difficulty=diff_enum,
+                acceptance_rate=prob.acceptance_rate,
+                ctx=rank_ctx,
+                explicit_difficulty=explicit_difficulty,
+            )
         )
-        topic_names = [t[0] for t in topic_rows]
+
+    # Split into topic-matching and other candidates when a topic was
+    # requested. Matching uses the same case-insensitive substring rule the
+    # old SQL ilike filter used.
+    topic_lower = topic.strip().lower() if topic is not None else None
+
+    def _matches(cand) -> bool:
+        if topic_lower is None:
+            return True
+        return any(topic_lower in t.lower() for t in cand.topics)
+
+    if topic is not None:
+        matching = [c for c in scored if _matches(c)]
+        others = [c for c in scored if not _matches(c)]
+        selected, counts = select_diverse(matching, limit)
+        if len(selected) < limit:
+            # Top up with the next-best-SCORED candidates (diversity-aware,
+            # carrying over the topic counts from the first pass) — never
+            # with unfiltered results.
+            extra, _ = select_diverse(others, limit - len(selected), counts)
+            selected.extend(extra)
+    else:
+        selected, _ = select_diverse(scored, limit)
+
+    # Map scored ids back to Problem rows for output fields.
+    prob_by_id = {p.id: p for p in problems_raw}
+
+    problems_out = []
+    for cand in selected:
+        prob = prob_by_id[cand.problem_id]
 
         # Determine unsolved confidence
         if prob.id in only_attempted_ids:
@@ -452,16 +520,18 @@ def search_candidate_problems(
                 "platform": platform_val,
                 "difficulty": difficulty_val,
                 "url": prob.problem_url,
-                "topics": topic_names,
+                "topics": topics_by_problem.get(prob.id, []),
                 "acceptance_rate": prob.acceptance_rate,
                 "likely_unsolved": True,
                 "unsolved_confidence": confidence,
+                "score": cand.breakdown["score"],
+                "score_breakdown": cand.breakdown,
             }
         )
 
     result: dict = {"problems": problems_out}
 
-    if catalog_limited:
+    if len(problems_out) < 5:
         result["catalog_limited"] = True
         result["catalog_message"] = (
             f"Only {len(problems_out)} candidate problem(s) found in the local catalog. "
