@@ -202,6 +202,16 @@ def eval_agent_for_profile(db: Session, ctx: dict) -> dict:
     metrics["tool_call_names"] = ",".join(result.tool_calls_made)
     metrics["agent_error"] = result.error or ""
     metrics["error_kind"] = result.error_kind or ""
+
+    # advice_specificity (evals.metrics_advice): fraction of recommendation
+    # reasons citing a topic/verdict fact that appeared in this run's tool
+    # outputs. Tool outputs are recorded by ToolDispatcher.tool_results.
+    from evals.metrics_advice import advice_specificity
+
+    dispatcher = getattr(agent, "_dispatcher", None)
+    tool_results = getattr(dispatcher, "tool_results", []) or []
+    reasons = [r.reason for r in result.recommendations]
+    metrics["advice_specificity"] = advice_specificity(reasons, tool_results)
     usage = getattr(agent, "last_usage", None) or {}
     metrics["prompt_tokens"] = float(usage.get("prompt_token_count", 0) or 0)
     metrics["output_tokens"] = float(usage.get("candidates_token_count", 0) or 0)
@@ -222,10 +232,10 @@ def print_markdown_table(rows: list[dict], mode: str) -> None:
     agent_cols = mode == "agent"
     header = (
         "| Profile | n | Grounding | Unsolved | WeakCov | DiffFit | Diversity |"
-        + (" Latency(s) | Tools | Tokens |" if agent_cols else "")
+        + (" Latency(s) | Tools | Tokens | Advice |" if agent_cols else "")
         + " CatalogLimited |"
     )
-    sep = "|" + "---|" * (7 + (3 if agent_cols else 0) + 1)
+    sep = "|" + "---|" * (8 + (4 if agent_cols else 0) + 1)
     print(header)
     print(sep)
     for r in rows:
@@ -238,7 +248,8 @@ def print_markdown_table(rows: list[dict], mode: str) -> None:
         if agent_cols:
             line += (
                 f" {r.get('latency_s', 0):.1f} | {int(r.get('tool_calls', 0))} "
-                f"| {int(r.get('total_tokens', 0))} |"
+                f"| {int(r.get('total_tokens', 0))} "
+                f"| {_fmt(r.get('advice_specificity', 0.0))} |"
             )
         line += f" {int(r.get('catalog_limited', 0))} |"
         print(line)
@@ -253,14 +264,25 @@ def print_markdown_table(rows: list[dict], mode: str) -> None:
     if agent_cols:
         lat = sum(r.get("latency_s", 0) for r in rows) / max(len(rows), 1)
         toks = sum(r.get("total_tokens", 0) for r in rows) / max(len(rows), 1)
-        mean_line += f" {lat:.1f} | — | {toks:.0f} |"
+        adv = sum(r.get("advice_specificity", 0.0) for r in rows) / max(len(rows), 1)
+        mean_line += f" {lat:.1f} | — | {toks:.0f} | **{_fmt(adv)}** |"
     mean_line += " — |"
     print(mean_line)
 
 
-def run(mode: str) -> dict:
+def run(
+    mode: str, include_failure_profiles: bool = False
+) -> dict:
     db, eval_profiles, problems, problem_topics = seed_eval_db()
     catalog = build_catalog_index(problems, problem_topics)
+
+    failure_names: set[str] = set()
+    if include_failure_profiles:
+        from evals.profiles_failure import seed_failure_profiles
+
+        extra = seed_failure_profiles(db, problems, problem_topics)
+        eval_profiles = list(eval_profiles) + extra
+        failure_names = {ep.name for ep in extra}
 
     rows: list[dict] = []
     for ep in eval_profiles:
@@ -273,17 +295,23 @@ def run(mode: str) -> dict:
         metrics["user_id"] = ep.user_id
         metrics["solved_count"] = len(ep.solved_ids)
         metrics["platforms"] = ",".join(ep.platforms)
+        metrics["is_failure_profile"] = ep.name in failure_names
         rows.append(metrics)
         logger.info("eval %s %s done: %s", mode, ep.name, metrics)
 
     means = mean_metrics(rows)
+    baseline_rows = [r for r in rows if not r.get("is_failure_profile")]
     return {
         "mode": mode,
         "seed": SEED,
         "catalog_size": len(catalog),
         "n_profiles": len(rows),
+        "include_failure_profiles": include_failure_profiles,
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "means": means,
+        # Mean over the original 22 baseline profiles only — comparable to
+        # Stage 2 numbers even when failure profiles are included.
+        "means_baseline": mean_metrics(baseline_rows),
         "profiles": rows,
     }
 
@@ -296,11 +324,20 @@ def main(argv: Optional[list[str]] = None) -> int:
         default=None,
         help="JSON output path (default: evals/results/<timestamp>.json)",
     )
+    parser.add_argument(
+        "--include-failure-profiles",
+        action="store_true",
+        help=(
+            "Also seed and evaluate the Stage 3 failure-pattern profiles "
+            "(evals/profiles_failure.py). Baseline profiles are unchanged; "
+            "the result JSON reports means_baseline over the original 22."
+        ),
+    )
     args = parser.parse_args(argv)
 
     logging.basicConfig(level=logging.WARNING, format="%(levelname)s %(name)s: %(message)s")
 
-    result = run(args.mode)
+    result = run(args.mode, include_failure_profiles=args.include_failure_profiles)
 
     print_markdown_table(result["profiles"], args.mode)
 
