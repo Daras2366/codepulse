@@ -18,6 +18,8 @@ from typing import Optional
 from sqlalchemy import func, distinct, select
 from sqlalchemy.orm import Session
 
+from app.models.contest import Contest
+from app.models.contest_participation import ContestParticipation
 from app.models.enums import Difficulty as DifficultyEnum
 from app.models.enums import Platform as PlatformEnum
 from app.models.enums import SubmissionStatus
@@ -93,6 +95,17 @@ def _get_attempted_problem_ids(db: Session, user_id: int) -> set[int]:
         .all()
     )
     return {row[0] for row in rows}
+
+
+def _utcnow() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def _as_utc(dt: datetime) -> datetime:
+    """Normalise a datetime to aware-UTC (SQLite may return naive values)."""
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
 
 
 # ---------------------------------------------------------------------------
@@ -616,4 +629,326 @@ def get_problem_details(db: Session, user_id: int, problem_id: int) -> dict:
         "acceptance_rate": prob.acceptance_rate,
         "user_has_solved": has_accepted,
         "user_submission_count": submission_count,
+    }
+
+
+def get_failure_patterns(
+    db: Session, user_id: int, max_topics: int = 10
+) -> dict:
+    """Per-topic failure breakdown for the authenticated user.
+
+    Groups the user's non-accepted submissions by verdict type
+    (wrong_answer, time_limit_exceeded, memory_limit_exceeded,
+    runtime_error, compile_error) per topic, and reports the 10 topics
+    with the most non-accepted submissions.
+
+    A problem tagged with multiple topics contributes its submissions to
+    each of those topics, so topic totals are not mutually exclusive.
+
+    Args:
+        db: SQLAlchemy session.
+        user_id: Authenticated user's ID.
+        max_topics: Maximum topics returned (default 10, clamped 1-25).
+
+    Returns:
+        Dict with "topics" (list sorted by non_accepted desc), each entry
+        having topic, total_attempts, non_accepted, failure_rate (0-1,
+        rounded to 2 decimals) and "verdicts" (status value → count).
+    """
+    max_topics = max(1, min(int(max_topics), 25))
+
+    profile_ids = select(PlatformProfile.id).where(
+        PlatformProfile.user_id == user_id
+    )
+
+    rows = (
+        db.query(Topic.name, Submission.status, func.count(Submission.id))
+        .join(Problem, Problem.id == Submission.problem_id)
+        .join(ProblemTopic, ProblemTopic.problem_id == Problem.id)
+        .join(Topic, Topic.id == ProblemTopic.topic_id)
+        .filter(Submission.profile_id.in_(profile_ids))
+        .group_by(Topic.name, Submission.status)
+        .all()
+    )
+
+    per_topic: dict[str, dict] = {}
+    for topic_name, status, count in rows:
+        entry = per_topic.setdefault(
+            topic_name,
+            {"total_attempts": 0, "accepted": 0, "verdicts": {}},
+        )
+        entry["total_attempts"] += count
+        status_val = status.value if hasattr(status, "value") else str(status)
+        if status_val == SubmissionStatus.ACCEPTED.value:
+            entry["accepted"] += count
+        else:
+            entry["verdicts"][status_val] = (
+                entry["verdicts"].get(status_val, 0) + count
+            )
+
+    topics_out = []
+    for topic_name, entry in per_topic.items():
+        non_accepted = entry["total_attempts"] - entry["accepted"]
+        topics_out.append(
+            {
+                "topic": topic_name,
+                "total_attempts": entry["total_attempts"],
+                "non_accepted": non_accepted,
+                "failure_rate": round(non_accepted / entry["total_attempts"], 2)
+                if entry["total_attempts"]
+                else 0.0,
+                "verdicts": entry["verdicts"],
+            }
+        )
+
+    topics_out.sort(
+        key=lambda t: (t["non_accepted"], t["total_attempts"]), reverse=True
+    )
+
+    return {
+        "topics": topics_out[:max_topics],
+        "note": (
+            "Problems tagged with multiple topics count toward each topic; "
+            "topic totals are not mutually exclusive."
+        ),
+    }
+
+
+def get_attempts_before_accept(db: Session, user_id: int) -> dict:
+    """Per-topic average submissions needed before the first ACCEPTED.
+
+    For every problem the user attempted that was eventually accepted,
+    counts how many submissions preceded the first ACCEPTED (the accept
+    itself is not counted). Problems never accepted are excluded from the
+    average but reported separately.
+
+    A problem tagged with multiple topics contributes to each topic.
+
+    Args:
+        db: SQLAlchemy session.
+        user_id: Authenticated user's ID.
+
+    Returns:
+        Dict with "topics" (up to 15, sorted by problems_measured desc),
+        each entry having topic, avg_attempts_before_accept (rounded to 2
+        decimals, null when nothing was measured), problems_measured and
+        never_accepted_problems.
+    """
+    profile_ids = select(PlatformProfile.id).where(
+        PlatformProfile.user_id == user_id
+    )
+
+    rows = (
+        db.query(
+            Submission.problem_id,
+            Topic.name,
+            Submission.status,
+            Submission.submitted_at,
+        )
+        .join(Problem, Problem.id == Submission.problem_id)
+        .join(ProblemTopic, ProblemTopic.problem_id == Problem.id)
+        .join(Topic, Topic.id == ProblemTopic.topic_id)
+        .filter(Submission.profile_id.in_(profile_ids))
+        .all()
+    )
+
+    # (topic, problem_id) -> list of (status_value, submitted_at)
+    attempts: dict[tuple[str, int], list[tuple[str, datetime]]] = {}
+    for problem_id, topic_name, status, submitted_at in rows:
+        status_val = status.value if hasattr(status, "value") else str(status)
+        attempts.setdefault((topic_name, problem_id), []).append(
+            (status_val, _as_utc(submitted_at))
+        )
+
+    per_topic: dict[str, dict] = {}
+    for (topic_name, _problem_id), subs in attempts.items():
+        subs.sort(key=lambda s: s[1])
+        first_accept_idx = next(
+            (i for i, (st, _) in enumerate(subs) if st == SubmissionStatus.ACCEPTED.value),
+            None,
+        )
+        entry = per_topic.setdefault(
+            topic_name,
+            {"attempts_sum": 0, "measured": 0, "never_accepted": 0},
+        )
+        if first_accept_idx is None:
+            entry["never_accepted"] += 1
+        else:
+            entry["attempts_sum"] += first_accept_idx
+            entry["measured"] += 1
+
+    topics_out = []
+    for topic_name, entry in per_topic.items():
+        topics_out.append(
+            {
+                "topic": topic_name,
+                "avg_attempts_before_accept": (
+                    round(entry["attempts_sum"] / entry["measured"], 2)
+                    if entry["measured"]
+                    else None
+                ),
+                "problems_measured": entry["measured"],
+                "never_accepted_problems": entry["never_accepted"],
+            }
+        )
+
+    topics_out.sort(
+        key=lambda t: (t["problems_measured"], t["never_accepted_problems"]),
+        reverse=True,
+    )
+
+    return {
+        "topics": topics_out[:15],
+        "note": (
+            "A problem tagged with multiple topics counts toward each topic. "
+            "avg_attempts_before_accept counts submissions before the first "
+            "ACCEPTED; never-accepted problems are excluded from the average."
+        ),
+    }
+
+
+def get_stale_topics(
+    db: Session, user_id: int, days: int = 30
+) -> dict:
+    """Topics the user has solved but not practised recently.
+
+    A topic is stale when the user has at least one ACCEPTED problem in it
+    but no submissions of any status on problems tagged with that topic
+    within the last ``days`` days.
+
+    Args:
+        db: SQLAlchemy session.
+        user_id: Authenticated user's ID.
+        days: Inactivity window in days (default 30, clamped 7-365).
+
+    Returns:
+        Dict with "window_days" and "topics" (up to 15, sorted by
+        days_since_last_activity desc), each entry having topic,
+        days_since_last_activity and solved_count.
+    """
+    days = max(7, min(int(days), 365))
+    cutoff = _utcnow() - timedelta(days=days)
+
+    profile_ids = select(PlatformProfile.id).where(
+        PlatformProfile.user_id == user_id
+    )
+
+    # Last submission timestamp per topic (any status).
+    last_rows = (
+        db.query(Topic.name, func.max(Submission.submitted_at))
+        .join(Problem, Problem.id == Submission.problem_id)
+        .join(ProblemTopic, ProblemTopic.problem_id == Problem.id)
+        .join(Topic, Topic.id == ProblemTopic.topic_id)
+        .filter(Submission.profile_id.in_(profile_ids))
+        .group_by(Topic.name)
+        .all()
+    )
+    last_activity = {name: _as_utc(ts) for name, ts in last_rows if ts is not None}
+
+    # Distinct solved problems per topic.
+    solved_rows = (
+        db.query(Topic.name, func.count(distinct(Submission.problem_id)))
+        .join(Problem, Problem.id == Submission.problem_id)
+        .join(ProblemTopic, ProblemTopic.problem_id == Problem.id)
+        .join(Topic, Topic.id == ProblemTopic.topic_id)
+        .filter(
+            Submission.profile_id.in_(profile_ids),
+            Submission.status == SubmissionStatus.ACCEPTED,
+        )
+        .group_by(Topic.name)
+        .all()
+    )
+    solved_counts = {name: count for name, count in solved_rows}
+
+    now = _utcnow()
+    topics_out = []
+    for topic_name, solved_count in solved_counts.items():
+        if solved_count <= 0:
+            continue
+        last = last_activity.get(topic_name)
+        if last is None or last >= cutoff:
+            continue
+        days_since = int((now - last).total_seconds() // 86400)
+        topics_out.append(
+            {
+                "topic": topic_name,
+                "days_since_last_activity": days_since,
+                "solved_count": solved_count,
+            }
+        )
+
+    topics_out.sort(key=lambda t: t["days_since_last_activity"], reverse=True)
+
+    return {"window_days": days, "topics": topics_out[:15]}
+
+
+_CONTEST_POSTMORTEM_LIMITATION = (
+    "Per-problem breakdowns within contests are not stored — only aggregate "
+    "solved counts are available. For Codeforces participations, 'solved' "
+    "is always 0 because the sync service does not populate it."
+)
+
+
+def get_contest_postmortem(
+    db: Session, user_id: int, limit: int = 5
+) -> dict:
+    """Rating-change postmortem for the user's most recent contests.
+
+    Returns the last ``limit`` contest participations (by contest start
+    time) with rank, rating change and aggregate solved count.
+
+    Args:
+        db: SQLAlchemy session.
+        user_id: Authenticated user's ID.
+        limit: Number of contests (default 5, clamped 1-10).
+
+    Returns:
+        Dict with "contests" (most recent first) and "limitation" describing
+        what per-contest data is not stored.
+    """
+    limit = max(1, min(int(limit), 10))
+
+    profile_ids = select(PlatformProfile.id).where(
+        PlatformProfile.user_id == user_id
+    )
+
+    rows = (
+        db.query(Contest, ContestParticipation)
+        .join(
+            ContestParticipation,
+            ContestParticipation.contest_id == Contest.id,
+        )
+        .filter(ContestParticipation.profile_id.in_(profile_ids))
+        .order_by(Contest.start_time.desc())
+        .limit(limit)
+        .all()
+    )
+
+    contests_out = []
+    for contest, part in rows:
+        platform_val = contest.platform
+        if hasattr(platform_val, "value"):
+            platform_val = platform_val.value
+        start_time = contest.start_time
+        contests_out.append(
+            {
+                "title": contest.title,
+                "platform": platform_val,
+                "start_time": (
+                    _as_utc(start_time).isoformat()
+                    if start_time is not None
+                    else None
+                ),
+                "rank": part.rank,
+                "old_rating": part.old_rating,
+                "new_rating": part.new_rating,
+                "rating_change": part.rating_change,
+                "solved": part.solved,
+                "penalty": part.penalty,
+            }
+        )
+
+    return {
+        "contests": contests_out,
+        "limitation": _CONTEST_POSTMORTEM_LIMITATION,
     }

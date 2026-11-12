@@ -28,8 +28,12 @@ from app.models.problem import Problem
 from app.models.problem_topic import ProblemTopic
 from app.models.topic import Topic
 from app.services.agent_tools import (
+    get_attempts_before_accept,
+    get_contest_postmortem,
+    get_failure_patterns,
     get_problem_details,
     get_recent_submissions,
+    get_stale_topics,
     get_solved_problem_ids,
     get_topic_performance,
     get_user_goals,
@@ -93,6 +97,10 @@ _ALLOWED_TOOLS = {
     "get_user_goals",
     "search_candidate_problems",
     "get_problem_details",
+    "get_failure_patterns",
+    "get_attempts_before_accept",
+    "get_stale_topics",
+    "get_contest_postmortem",
 }
 
 
@@ -113,6 +121,10 @@ class ToolDispatcher:
         """
         self._db = db
         self._user_id = user_id  # immutable after construction
+        # Every dispatched tool call's result, in order. Used by the eval
+        # harness (advice_specificity) to check whether recommendation
+        # reasons cite facts the tools actually returned.
+        self.tool_results: list[dict] = []
 
     def dispatch(self, tool_name: str, tool_args: dict) -> dict:
         """Dispatch a tool call and return the result as a dict.
@@ -137,39 +149,7 @@ class ToolDispatcher:
         }
 
         try:
-            if tool_name == "get_user_performance_profile":
-                return get_user_performance_profile(self._db, self._user_id)
-
-            elif tool_name == "get_topic_performance":
-                return {"topics": get_topic_performance(self._db, self._user_id)}
-
-            elif tool_name == "get_recent_submissions":
-                limit = int(clean_args.get("limit", 20))
-                return {
-                    "submissions": get_recent_submissions(
-                        self._db, self._user_id, limit=limit
-                    )
-                }
-
-            elif tool_name == "get_user_goals":
-                return {"goals": get_user_goals(self._db, self._user_id)}
-
-            elif tool_name == "search_candidate_problems":
-                return search_candidate_problems(
-                    self._db,
-                    self._user_id,
-                    topic=clean_args.get("topic"),
-                    difficulty=clean_args.get("difficulty"),
-                    platform=clean_args.get("platform"),
-                    limit=int(clean_args.get("limit", 10)),
-                )
-
-            elif tool_name == "get_problem_details":
-                problem_id = clean_args.get("problem_id")
-                if problem_id is None:
-                    return {"error": "problem_id is required"}
-                return get_problem_details(self._db, self._user_id, int(problem_id))
-
+            result = self._execute_tool(tool_name, clean_args)
         except Exception as exc:
             logger.warning(
                 "ToolDispatcher: tool=%s raised %s: %s",
@@ -177,7 +157,67 @@ class ToolDispatcher:
                 type(exc).__name__,
                 exc,
             )
-            return {"error": str(exc), "tool": tool_name}
+            result = {"error": str(exc), "tool": tool_name}
+
+        self.tool_results.append({"tool": tool_name, "result": result})
+        return result
+
+    def _execute_tool(self, tool_name: str, clean_args: dict) -> dict:
+        """Run an allowed tool. ``clean_args`` has user_id/db already stripped."""
+        if tool_name == "get_user_performance_profile":
+            return get_user_performance_profile(self._db, self._user_id)
+
+        elif tool_name == "get_topic_performance":
+            return {"topics": get_topic_performance(self._db, self._user_id)}
+
+        elif tool_name == "get_recent_submissions":
+            limit = int(clean_args.get("limit", 20))
+            return {
+                "submissions": get_recent_submissions(
+                    self._db, self._user_id, limit=limit
+                )
+            }
+
+        elif tool_name == "get_user_goals":
+            return {"goals": get_user_goals(self._db, self._user_id)}
+
+        elif tool_name == "search_candidate_problems":
+            return search_candidate_problems(
+                self._db,
+                self._user_id,
+                topic=clean_args.get("topic"),
+                difficulty=clean_args.get("difficulty"),
+                platform=clean_args.get("platform"),
+                limit=int(clean_args.get("limit", 10)),
+            )
+
+        elif tool_name == "get_problem_details":
+            problem_id = clean_args.get("problem_id")
+            if problem_id is None:
+                return {"error": "problem_id is required"}
+            return get_problem_details(self._db, self._user_id, int(problem_id))
+
+        elif tool_name == "get_failure_patterns":
+            return get_failure_patterns(self._db, self._user_id)
+
+        elif tool_name == "get_attempts_before_accept":
+            return get_attempts_before_accept(self._db, self._user_id)
+
+        elif tool_name == "get_stale_topics":
+            days = clean_args.get("days")
+            return get_stale_topics(
+                self._db,
+                self._user_id,
+                days=int(days) if days is not None else 30,
+            )
+
+        elif tool_name == "get_contest_postmortem":
+            limit = clean_args.get("limit")
+            return get_contest_postmortem(
+                self._db,
+                self._user_id,
+                limit=int(limit) if limit is not None else 5,
+            )
 
         return {"error": f"Tool not implemented: {tool_name}"}
 
@@ -297,6 +337,73 @@ _TOOL_DECLARATIONS = [
             "required": ["problem_id"],
         },
     ),
+    types.FunctionDeclaration(
+        name="get_failure_patterns",
+        description=(
+            "Get the user's non-accepted submissions grouped by verdict type "
+            "(wrong_answer, time_limit_exceeded, etc.) per topic, for the 10 "
+            "worst topics. Call this to understand HOW the user fails — e.g. "
+            "TLE-heavy on graphs vs wrong-answer-heavy on DP — so reasons can "
+            "cite specific failure types."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {},
+            "required": [],
+        },
+    ),
+    types.FunctionDeclaration(
+        name="get_attempts_before_accept",
+        description=(
+            "Get, per topic, the average number of submissions the user needs "
+            "before their first ACCEPTED on a problem, plus how many problems "
+            "were never accepted. Call this when judging whether a topic is "
+            "ready for harder problems — a high average means the user "
+            "struggles even on problems they eventually solve."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {},
+            "required": [],
+        },
+    ),
+    types.FunctionDeclaration(
+        name="get_stale_topics",
+        description=(
+            "Get topics the user has solved at least once but has not "
+            "submitted to in the last N days (default 30). Call this to "
+            "find skills that are fading and worth revisiting."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "days": {
+                    "type": "integer",
+                    "description": "Inactivity window in days (default 30, allowed 7-365).",
+                }
+            },
+            "required": [],
+        },
+    ),
+    types.FunctionDeclaration(
+        name="get_contest_postmortem",
+        description=(
+            "Get rating changes and aggregate solved counts for the user's "
+            "most recent contests. Call this ONLY when the user has contest "
+            "data or a contest-related goal; per-problem contest breakdowns "
+            "are not stored."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "limit": {
+                    "type": "integer",
+                    "description": "Number of recent contests to return (default 5, allowed 1-10).",
+                }
+            },
+            "required": [],
+        },
+    ),
 ]
 
 # ---------------------------------------------------------------------------
@@ -366,11 +473,15 @@ real practice problems to the user based on their actual performance data.
 ## Workflow
 
 1. ALWAYS start by calling `get_user_performance_profile` AND `get_topic_performance` in your first turn.
-2. Optionally call `get_user_goals` to align with the user's stated goals.
-3. Call `search_candidate_problems` to find real, unsolved problems — use weak topic areas, \
+2. Then call `get_failure_patterns` and `get_stale_topics` to learn how the user fails \
+and which solved topics are going stale.
+3. Call `get_attempts_before_accept` when judging whether a topic is ready for harder problems.
+4. Optionally call `get_user_goals` to align with the user's stated goals. Call \
+`get_contest_postmortem` ONLY if the user has contest data or a contest-related goal.
+5. Call `search_candidate_problems` to find real, unsolved problems — use weak topic areas, \
    appropriate difficulty, and relevant platform filters.
-4. Optionally call `get_problem_details` on 1-3 promising candidates to verify details.
-5. Select 3-5 problems and prepare your final JSON response.
+6. Optionally call `get_problem_details` on 1-3 promising candidates to verify details.
+7. Select 3-5 problems and prepare your final JSON response.
 
 ## Rules
 
@@ -380,6 +491,11 @@ real practice problems to the user based on their actual performance data.
 - If the user has insufficient data (fewer than 5 submissions), say so explicitly.
 - Prioritise problems in topics where the user is "weak" or "moderate" strength.
 - Match difficulty to the user's level (do not recommend Hard problems to beginners).
+- Every recommendation's "reason" MUST cite a specific fact returned by a tool — \
+e.g. a topic name, a verdict type (wrong_answer, time_limit_exceeded), a staleness \
+gap in days, or an attempts-before-accept count. Do NOT state facts that no tool \
+returned. If a tool result contains a "limitation" field, do NOT claim the missing \
+detail (e.g. do not describe per-problem contest breakdowns).
 
 ## Final Response
 
@@ -402,6 +518,10 @@ in the catalog.
 # ---------------------------------------------------------------------------
 
 _MAX_ITERATIONS = 6
+# Hard cap on total function calls across all iterations. When reached,
+# excess calls get a "finalize" tool result and the loop exits to the
+# no-tools final generation below.
+_MAX_TOOL_CALLS = 10
 
 
 class RecommendationAgent:
@@ -518,6 +638,8 @@ class RecommendationAgent:
             AgentRecommendationResult.
         """
         tool_calls_made: list[str] = []
+        call_count = 0  # every function call across iterations (cap accounting)
+        cap_reached = False
 
         # Initial user message to trigger the agent workflow
         contents: list[types.Content] = [
@@ -579,15 +701,31 @@ class RecommendationAgent:
             for fc in function_calls_in_response:
                 tool_name = fc.name
                 tool_args = dict(fc.args) if fc.args else {}
+                call_count += 1
 
-                logger.debug(
-                    "RecommendationAgent: calling tool=%s args=%s",
-                    tool_name,
-                    list(tool_args.keys()),
-                )
-                tool_calls_made.append(tool_name)
-
-                tool_result = self._dispatcher.dispatch(tool_name, tool_args)
+                if call_count > _MAX_TOOL_CALLS:
+                    cap_reached = True
+                    logger.debug(
+                        "RecommendationAgent: tool call cap reached "
+                        "(>%d) — telling model to finalize",
+                        _MAX_TOOL_CALLS,
+                    )
+                    tool_result = {
+                        "error": "tool_call_limit_reached",
+                        "message": (
+                            "You have used all available tool calls. Do not "
+                            "call any more tools — produce your final JSON "
+                            "response now."
+                        ),
+                    }
+                else:
+                    logger.debug(
+                        "RecommendationAgent: calling tool=%s args=%s",
+                        tool_name,
+                        list(tool_args.keys()),
+                    )
+                    tool_calls_made.append(tool_name)
+                    tool_result = self._dispatcher.dispatch(tool_name, tool_args)
 
                 tool_result_parts.append(
                     types.Part(
@@ -604,11 +742,20 @@ class RecommendationAgent:
                 types.Content(role="user", parts=tool_result_parts)
             )
 
-        # Exceeded max iterations — try to get a final response
+            if cap_reached:
+                # Stop calling tools and force the final no-tools generation
+                # below so the loop always terminates with an answer.
+                break
+
+        # Loop ended without a text response (max iterations or tool-call
+        # cap) — try to get a final response without tools.
         logger.warning(
-            "RecommendationAgent: exceeded max_iterations=%d for user_id=%d",
-            _MAX_ITERATIONS,
+            "RecommendationAgent: ending loop early for user_id=%d "
+            "(iterations_exhausted=%s, tool_call_cap=%s, calls=%d)",
             self._user_id,
+            not cap_reached,
+            cap_reached,
+            call_count,
         )
 
         # Try one more generate without tools to force a text response
