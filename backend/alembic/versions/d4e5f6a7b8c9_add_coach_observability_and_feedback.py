@@ -75,6 +75,10 @@ def downgrade() -> None:
     """Downgrade schema."""
     op.drop_index(op.f('ix_coach_feedback_recommendation_id'), table_name='coach_feedback')
     op.drop_table('coach_feedback')
+    sa.Enum(
+        'solved', 'skipped', 'thumbs_up', 'thumbs_down',
+        name='coachfeedbackaction',
+    ).drop(op.get_bind(), checkfirst=True)
     op.drop_index(op.f('ix_coach_recommendations_problem_id'), table_name='coach_recommendations')
     op.drop_index(op.f('ix_coach_recommendations_user_id'), table_name='coach_recommendations')
     op.drop_index(op.f('ix_coach_recommendations_run_id'), table_name='coach_recommendations')
