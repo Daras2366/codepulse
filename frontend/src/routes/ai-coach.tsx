@@ -11,6 +11,8 @@ import {
   RotateCcw,
   Send,
   Sparkles,
+  ThumbsDown,
+  ThumbsUp,
   Trophy,
 } from "lucide-react";
 import * as React from "react";
@@ -22,7 +24,10 @@ import {
   getAgentRecommendations,
   getRecommendations,
   getUpcomingContests,
+  submitCoachFeedback,
+  type AgentProblemRecommendation,
   type AgentRecommendationResponse,
+  type CoachFeedbackAction,
   type Recommendation,
 } from "@/api/recommendations";
 
@@ -223,21 +228,156 @@ function agentErrorMessage(data: AgentRecommendationResponse | undefined, queryE
   return "AI recommendations failed. Please try again.";
 }
 
+function formatRefreshTime(iso: string | null | undefined): string | null {
+  if (!iso) return null;
+  const then = new Date(iso).getTime();
+  if (Number.isNaN(then)) return null;
+  const diffMs = Date.now() - then;
+  const mins = Math.floor(diffMs / 60_000);
+  if (mins < 1) return "just now";
+  if (mins < 60) return `${mins}m ago`;
+  const hours = Math.floor(mins / 60);
+  if (hours < 24) return `${hours}h ago`;
+  return `${Math.floor(hours / 24)}d ago`;
+}
+
+function RecommendationFeedback({ recommendationId }: { recommendationId: number }) {
+  const [submittedAction, setSubmittedAction] = React.useState<CoachFeedbackAction | null>(null);
+  const [failed, setFailed] = React.useState(false);
+
+  const mutation = useMutation({
+    mutationFn: (action: CoachFeedbackAction) => submitCoachFeedback(recommendationId, action),
+  });
+
+  const submit = (action: CoachFeedbackAction) => {
+    if (mutation.isPending || submittedAction) return;
+    setFailed(false);
+    mutation.mutate(action, {
+      onSuccess: () => setSubmittedAction(action),
+      onError: () => setFailed(true),
+    });
+  };
+
+  if (submittedAction) {
+    return <p className="text-caption mt-3 text-subtle">Thanks — feedback recorded.</p>;
+  }
+
+  return (
+    <div className="mt-3 flex items-center gap-2">
+      <button
+        onClick={() => submit("thumbs_up")}
+        disabled={mutation.isPending}
+        className="flex items-center gap-1 rounded-full border border-border px-2.5 py-1 text-caption text-subtle transition-colors hover:bg-muted disabled:opacity-50"
+        title="This recommendation was helpful"
+      >
+        {mutation.isPending ? (
+          <Loader2 className="h-3.5 w-3.5 animate-spin" />
+        ) : (
+          <ThumbsUp className="h-3.5 w-3.5" />
+        )}
+        Helpful
+      </button>
+      <button
+        onClick={() => submit("thumbs_down")}
+        disabled={mutation.isPending}
+        className="flex items-center gap-1 rounded-full border border-border px-2.5 py-1 text-caption text-subtle transition-colors hover:bg-muted disabled:opacity-50"
+        title="This recommendation was not helpful"
+      >
+        <ThumbsDown className="h-3.5 w-3.5" />
+        Not helpful
+      </button>
+      {failed && <span className="text-caption text-pink">Feedback failed — try again.</span>}
+    </div>
+  );
+}
+
+function AgentRecommendationCard({ rec }: { rec: AgentProblemRecommendation }) {
+  return (
+    <li className="lift rounded-2xl border border-border bg-muted/50 p-5">
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="text-label rounded-full bg-violet-soft px-2 py-0.5 text-xs font-medium text-violet">
+          Priority {rec.priority}
+        </span>
+        <span className="text-label rounded-full bg-muted px-2 py-0.5 text-xs text-subtle">
+          {rec.platform}
+        </span>
+        {rec.difficulty && (
+          <span
+            className={cn(
+              "text-label rounded-full px-2 py-0.5 text-xs font-medium",
+              rec.difficulty === "Easy"
+                ? "bg-green-soft text-green"
+                : rec.difficulty === "Medium"
+                  ? "bg-yellow-soft text-yellow"
+                  : "bg-pink-soft text-pink",
+            )}
+          >
+            {rec.difficulty}
+          </span>
+        )}
+        <span className="text-label text-xs text-subtle">
+          {rec.likely_unsolved ? "Verified unsolved" : "Solve status uncertain"}
+        </span>
+      </div>
+
+      <a
+        href={rec.url}
+        target="_blank"
+        rel="noopener noreferrer"
+        className="text-card-title mt-2 flex items-center gap-1 hover:text-violet"
+      >
+        {rec.title}
+        <ExternalLink className="h-3.5 w-3.5 shrink-0 opacity-60" />
+      </a>
+
+      {rec.topics.length > 0 && (
+        <div className="mt-2 flex flex-wrap gap-1.5">
+          {rec.topics.slice(0, 5).map((topic) => (
+            <span key={topic} className="rounded-full bg-muted px-2 py-0.5 text-xs text-subtle">
+              {topic}
+            </span>
+          ))}
+        </div>
+      )}
+
+      <p className="text-body mt-3 text-muted-foreground">{rec.reason}</p>
+
+      {rec.recommendation_id != null && (
+        <RecommendationFeedback recommendationId={rec.recommendation_id} />
+      )}
+    </li>
+  );
+}
+
 function AgentRecommendationsSection() {
   const queryClient = useQueryClient();
   const [enabled, setEnabled] = React.useState(false);
 
   const { data, isLoading, error, refetch } = useQuery({
     queryKey: ["agent-recommendations"],
-    queryFn: getAgentRecommendations,
+    queryFn: () => getAgentRecommendations(false),
     enabled,
     retry: false,
   });
+
+  // Force refresh bypasses the server-side cache but still respects the
+  // per-user rate limit. Existing recommendations stay visible while the
+  // fresh result is being generated.
+  const refreshMutation = useMutation({
+    mutationFn: () => getAgentRecommendations(true),
+    onSuccess: (fresh) => {
+      queryClient.setQueryData(["agent-recommendations"], fresh);
+    },
+  });
+
+  const forceRefresh = () => refreshMutation.mutate();
 
   const start = () => {
     setEnabled(true);
     queryClient.invalidateQueries({ queryKey: ["agent-recommendations"] });
   };
+
+  const refreshedLabel = formatRefreshTime(data?.refreshed_at);
 
   return (
     <Panel
@@ -245,7 +385,18 @@ function AgentRecommendationsSection() {
       caption="Gemini searches your real problem catalog for unsolved problems matched to your weak areas"
       action={
         data ? (
-          <RefreshButton onClick={() => refetch()} title="Get fresh AI recommendations" />
+          <button
+            onClick={forceRefresh}
+            disabled={refreshMutation.isPending}
+            className="flex h-9 w-9 items-center justify-center rounded-full bg-violet-soft text-violet transition-colors hover:bg-violet-soft/80 disabled:opacity-60"
+            title="Get fresh AI recommendations"
+          >
+            {refreshMutation.isPending ? (
+              <Loader2 className="h-4 w-4 animate-spin" />
+            ) : (
+              <RefreshCw className="h-4 w-4" strokeWidth={1.6} />
+            )}
+          </button>
         ) : undefined
       }
     >
@@ -328,61 +479,10 @@ function AgentRecommendationsSection() {
           ) : (
             <ul className="grid gap-4 lg:grid-cols-2">
               {data.recommendations.slice(0, 6).map((rec, index) => (
-                <li
-                  key={rec.problem_id ?? index}
-                  className="lift rounded-2xl border border-border bg-muted/50 p-5"
-                >
-                  <div className="flex flex-wrap items-center gap-2">
-                    <span className="text-label rounded-full bg-violet-soft px-2 py-0.5 text-xs font-medium text-violet">
-                      Priority {rec.priority}
-                    </span>
-                    <span className="text-label rounded-full bg-muted px-2 py-0.5 text-xs text-subtle">
-                      {rec.platform}
-                    </span>
-                    {rec.difficulty && (
-                      <span
-                        className={cn(
-                          "text-label rounded-full px-2 py-0.5 text-xs font-medium",
-                          rec.difficulty === "Easy"
-                            ? "bg-green-soft text-green"
-                            : rec.difficulty === "Medium"
-                              ? "bg-yellow-soft text-yellow"
-                              : "bg-pink-soft text-pink",
-                        )}
-                      >
-                        {rec.difficulty}
-                      </span>
-                    )}
-                    <span className="text-label text-xs text-subtle">
-                      {rec.likely_unsolved ? "Verified unsolved" : "Solve status uncertain"}
-                    </span>
-                  </div>
-
-                  <a
-                    href={rec.url}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="text-card-title mt-2 flex items-center gap-1 hover:text-violet"
-                  >
-                    {rec.title}
-                    <ExternalLink className="h-3.5 w-3.5 shrink-0 opacity-60" />
-                  </a>
-
-                  {rec.topics.length > 0 && (
-                    <div className="mt-2 flex flex-wrap gap-1.5">
-                      {rec.topics.slice(0, 5).map((topic) => (
-                        <span
-                          key={topic}
-                          className="rounded-full bg-muted px-2 py-0.5 text-xs text-subtle"
-                        >
-                          {topic}
-                        </span>
-                      ))}
-                    </div>
-                  )}
-
-                  <p className="text-body mt-3 text-muted-foreground">{rec.reason}</p>
-                </li>
+                <AgentRecommendationCard
+                  key={rec.recommendation_id ?? rec.problem_id ?? index}
+                  rec={rec}
+                />
               ))}
             </ul>
           )}
@@ -391,16 +491,29 @@ function AgentRecommendationsSection() {
             <p className="text-caption text-subtle">Note: {data.error}</p>
           )}
 
-          <div className="flex items-center justify-between">
+          {refreshMutation.isError && (
+            <p className="text-caption text-pink">
+              Fresh recommendations failed to load — showing the previous result.
+            </p>
+          )}
+
+          <div className="flex items-center justify-between gap-3">
             <p className="text-caption text-subtle">
+              {data.from_cache ? "Cached" : "Fresh"}
+              {refreshedLabel ? ` · refreshed ${refreshedLabel}` : ""} ·{" "}
               {data.tool_calls_made.length} tool call
               {data.tool_calls_made.length !== 1 ? "s" : ""} made
             </p>
             <button
-              onClick={() => refetch()}
-              className="flex items-center gap-2 rounded-2xl border border-border px-4 py-2 text-caption font-medium text-subtle transition-colors hover:bg-muted"
+              onClick={forceRefresh}
+              disabled={refreshMutation.isPending}
+              className="flex items-center gap-2 rounded-2xl border border-border px-4 py-2 text-caption font-medium text-subtle transition-colors hover:bg-muted disabled:opacity-60"
             >
-              <RefreshCw className="h-3.5 w-3.5" />
+              {refreshMutation.isPending ? (
+                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+              ) : (
+                <RefreshCw className="h-3.5 w-3.5" />
+              )}
               Reconsider
             </button>
           </div>

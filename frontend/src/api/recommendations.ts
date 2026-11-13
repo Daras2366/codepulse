@@ -61,6 +61,7 @@ export interface AgentProblemRecommendation {
   reason: string;
   priority: number;
   likely_unsolved: boolean;
+  recommendation_id?: number | null;
 }
 
 export interface AgentRecommendationResponse {
@@ -72,11 +73,38 @@ export interface AgentRecommendationResponse {
   tool_calls_made: string[];
   error: string | null;
   error_kind?: string | null;
+  from_cache?: boolean;
+  refreshed_at?: string | null;
 }
 
-export async function getAgentRecommendations(): Promise<AgentRecommendationResponse> {
-  return apiRequest<AgentRecommendationResponse>("/ai-coach/recommend", {
+export async function getAgentRecommendations(
+  forceRefresh = false,
+): Promise<AgentRecommendationResponse> {
+  const suffix = forceRefresh ? "?force_refresh=true" : "";
+  return apiRequest<AgentRecommendationResponse>(`/ai-coach/recommend${suffix}`, {
     method: "POST",
+  });
+}
+
+// ---------------------------------------------------------------------------
+// AI Coach recommendation feedback
+// ---------------------------------------------------------------------------
+
+export type CoachFeedbackAction = "solved" | "skipped" | "thumbs_up" | "thumbs_down";
+
+export interface CoachFeedbackResponse {
+  recommendation_id: number;
+  action: CoachFeedbackAction;
+  recorded: boolean;
+}
+
+export async function submitCoachFeedback(
+  recommendationId: number,
+  action: CoachFeedbackAction,
+) {
+  return apiRequest<CoachFeedbackResponse>("/ai-coach/feedback", {
+    method: "POST",
+    body: JSON.stringify({ recommendation_id: recommendationId, action }),
   });
 }
 

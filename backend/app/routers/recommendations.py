@@ -6,14 +6,19 @@ Provides endpoints for:
 - AI Agent problem recommendations using Gemini function calling
 """
 
+import time
+from datetime import datetime, timezone
+
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, field_validator, model_validator
 from sqlalchemy.orm import Session
 from typing import Optional
 
+from app.core.config import settings
 from app.core.deps import get_current_user
 from app.core.database import get_db
-from app.models.enums import GoalStatus
+from app.core.rate_limit import rate_limiter
+from app.models.enums import CoachFeedbackAction, GoalStatus
 from app.models.goal import Goal
 from app.models.user import User
 from app.schemas.analytics import (
@@ -21,6 +26,16 @@ from app.schemas.analytics import (
     RecommendationsResponse,
 )
 from app.schemas.study_plan import StudyPlanContest, StudyPlanResponse
+from app.services import coach_cache
+from app.services.coach_feedback_service import (
+    FeedbackNotFoundError,
+    submit_feedback,
+)
+from app.services.coach_observability_service import (
+    ENDPOINT_CHAT,
+    ENDPOINT_RECOMMEND,
+    CoachObservabilityService,
+)
 from app.services.performance_analyzer import PerformanceAnalyzer
 from app.services.recommendation_service import RecommendationService
 from app.services.study_plan_service import StudyPlanService
@@ -39,6 +54,39 @@ router = APIRouter()
 _VALID_ROLES = {"user", "assistant"}
 _MAX_MESSAGE_LEN = 1000
 _MAX_HISTORY_MESSAGES = 10
+
+
+def _setting_int(name: str, default: int) -> int:
+    """Read an int setting defensively (tests may patch ``settings``)."""
+    value = getattr(settings, name, default)
+    return int(value) if isinstance(value, (int, float)) else default
+
+
+def _enforce_rate_limit(user_id: int, scope: str) -> None:
+    """Apply the per-user rate limit for an AI Coach endpoint.
+
+    ``scope`` is "RECOMMEND" or "CHAT". Every authenticated request consumes
+    quota — including requests that later fail at the provider — and
+    ``force_refresh`` does not bypass this check.
+    """
+    default_limit = 20 if scope == "RECOMMEND" else 60
+    limit = _setting_int(f"AI_COACH_{scope}_RATE_LIMIT", default_limit)
+    window = _setting_int("AI_COACH_RATE_LIMIT_WINDOW_SECONDS", 3600)
+    result = rate_limiter.check(f"{scope.lower()}:{user_id}", limit, window)
+    if not result.allowed:
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail=(
+                "AI Coach rate limit reached. "
+                "Please try again later."
+            ),
+            headers={"Retry-After": str(result.retry_after_seconds)},
+        )
+
+
+def _model_name() -> Optional[str]:
+    model = getattr(settings, "GEMINI_MODEL", None)
+    return model if isinstance(model, str) and model else None
 
 
 class ChatMessage(BaseModel):
@@ -169,6 +217,10 @@ async def chat_with_coach(
     # Re-raise validation errors as 400.
     from pydantic import ValidationError  # local to avoid circular imports
 
+    _enforce_rate_limit(current_user.id, "CHAT")
+    started_at = time.monotonic()
+    observability = CoachObservabilityService(db)
+
     # Get authenticated user's performance data from the database.
     # This is rebuilt on every request — client cannot influence it.
     analyzer = PerformanceAnalyzer(db)
@@ -197,6 +249,14 @@ async def chat_with_coach(
     gemini_service = GeminiService()
 
     if not gemini_service.is_configured():
+        observability.record_run(
+            user_id=current_user.id,
+            endpoint=ENDPOINT_CHAT,
+            model=_model_name(),
+            latency_ms=int((time.monotonic() - started_at) * 1000),
+            cache_hit=False,
+            error_kind="not_configured",
+        )
         return ChatResponse(
             response=(
                 "AI Coach is not configured. "
@@ -212,9 +272,25 @@ async def chat_with_coach(
             recommendations_summary=recommendations_summary,
             conversation_history=history,
         )
+        observability.record_run(
+            user_id=current_user.id,
+            endpoint=ENDPOINT_CHAT,
+            model=getattr(gemini_service, "last_model", None) or _model_name(),
+            latency_ms=int((time.monotonic() - started_at) * 1000),
+            usage=getattr(gemini_service, "last_usage", None),
+            cache_hit=False,
+        )
         return ChatResponse(response=response, is_configured=True)
 
     except GeminiNotConfiguredError:
+        observability.record_run(
+            user_id=current_user.id,
+            endpoint=ENDPOINT_CHAT,
+            model=_model_name(),
+            latency_ms=int((time.monotonic() - started_at) * 1000),
+            cache_hit=False,
+            error_kind="not_configured",
+        )
         return ChatResponse(
             response=(
                 "AI Coach is not configured. "
@@ -224,6 +300,14 @@ async def chat_with_coach(
         )
 
     except GeminiProviderError as exc:
+        observability.record_run(
+            user_id=current_user.id,
+            endpoint=ENDPOINT_CHAT,
+            model=getattr(gemini_service, "last_model", None) or _model_name(),
+            latency_ms=int((time.monotonic() - started_at) * 1000),
+            cache_hit=False,
+            error_kind=exc.kind,
+        )
         http_status = (
             status.HTTP_503_SERVICE_UNAVAILABLE
             if exc.is_retryable
@@ -233,6 +317,17 @@ async def chat_with_coach(
             status_code=http_status,
             detail=f"AI Coach unavailable: {str(exc)}",
         ) from exc
+
+    except Exception:
+        observability.record_run(
+            user_id=current_user.id,
+            endpoint=ENDPOINT_CHAT,
+            model=getattr(gemini_service, "last_model", None) or _model_name(),
+            latency_ms=int((time.monotonic() - started_at) * 1000),
+            cache_hit=False,
+            error_kind="unknown",
+        )
+        raise
 
 
 def _build_performance_summary(profile: PerformanceProfile) -> str:
@@ -371,6 +466,8 @@ class AgentProblemRecommendation(BaseModel):
     reason: str
     priority: int
     likely_unsolved: bool
+    recommendation_id: Optional[int] = None
+    """Stable id of the persisted coach_recommendations row (for feedback)."""
 
 
 class AgentRecommendationResponse(BaseModel):
@@ -384,6 +481,26 @@ class AgentRecommendationResponse(BaseModel):
     tool_calls_made: list[str]
     error: Optional[str] = None
     error_kind: Optional[str] = None
+    from_cache: bool = False
+    """True when this response was served from the recommendation cache."""
+    refreshed_at: Optional[str] = None
+    """ISO timestamp of the latest actual (non-cached) generation."""
+
+
+class FeedbackRequest(BaseModel):
+    """Request body for POST /ai-coach/feedback."""
+
+    recommendation_id: int
+    action: CoachFeedbackAction
+
+
+class FeedbackResponse(BaseModel):
+    """Response for POST /ai-coach/feedback."""
+
+    recommendation_id: int
+    action: str
+    recorded: bool
+    """False when identical feedback already existed (idempotent retry)."""
 
 
 # ---------------------------------------------------------------------------
@@ -393,6 +510,7 @@ class AgentRecommendationResponse(BaseModel):
 
 @router.post("/ai-coach/recommend", response_model=AgentRecommendationResponse)
 def get_agent_recommendations(
+    force_refresh: bool = False,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> AgentRecommendationResponse:
@@ -406,10 +524,80 @@ def get_agent_recommendations(
 
     Returns a structured response with up to 5 problem recommendations,
     the agent's reasoning, and observability metadata (tool calls made).
+
+    Caching: successful results are cached per user for
+    ``AI_COACH_RECOMMEND_CACHE_TTL_SECONDS`` (default 6h). The cache key
+    covers the user's submission state, active goals, model, and prompt
+    version. Pass ``force_refresh=true`` to bypass the cache (still subject
+    to the per-user rate limit).
     """
+    _enforce_rate_limit(current_user.id, "RECOMMEND")
+
+    fingerprint = coach_cache.compute_fingerprint(db, current_user.id)
+
+    if not force_refresh:
+        cached = coach_cache.get_cached(current_user.id, fingerprint)
+        if cached is not None:
+            CoachObservabilityService(db).record_run(
+                user_id=current_user.id,
+                endpoint=ENDPOINT_RECOMMEND,
+                model=_model_name(),
+                cache_hit=True,
+            )
+            payload = dict(cached["payload"])
+            return AgentRecommendationResponse(
+                **payload,
+                from_cache=True,
+                refreshed_at=cached.get("refreshed_at"),
+            )
+
+    # Serialize generation per fingerprint so concurrent identical requests
+    # don't run the agent loop in parallel; re-check the cache inside the
+    # lock in case another request just populated it.
+    with coach_cache.generation_lock(current_user.id, fingerprint):
+        if not force_refresh:
+            cached = coach_cache.get_cached(current_user.id, fingerprint)
+            if cached is not None:
+                CoachObservabilityService(db).record_run(
+                    user_id=current_user.id,
+                    endpoint=ENDPOINT_RECOMMEND,
+                    model=_model_name(),
+                    cache_hit=True,
+                )
+                payload = dict(cached["payload"])
+                return AgentRecommendationResponse(
+                    **payload,
+                    from_cache=True,
+                    refreshed_at=cached.get("refreshed_at"),
+                )
+
+        return _generate_agent_recommendations(
+            current_user=current_user,
+            db=db,
+            fingerprint=fingerprint,
+        )
+
+
+def _generate_agent_recommendations(
+    *,
+    current_user: User,
+    db: Session,
+    fingerprint: str,
+) -> AgentRecommendationResponse:
+    """Run the agent, record observability, persist + cache on success."""
+    started_at = time.monotonic()
+    observability = CoachObservabilityService(db)
     agent = RecommendationAgent(db, user_id=current_user.id)
 
     if not agent.is_configured():
+        observability.record_run(
+            user_id=current_user.id,
+            endpoint=ENDPOINT_RECOMMEND,
+            model=_model_name(),
+            latency_ms=int((time.monotonic() - started_at) * 1000),
+            cache_hit=False,
+            error_kind="not_configured",
+        )
         return AgentRecommendationResponse(
             recommendations=[],
             agent_reasoning="",
@@ -425,49 +613,138 @@ def get_agent_recommendations(
 
     try:
         result: AgentRecommendationResult = agent.recommend()
-
-        # Check for timeout-style errors
-        if result.error and (
-            "timed out" in result.error.lower()
-            or "timeout" in result.error.lower()
-        ):
-            raise HTTPException(
-                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail=result.error,
-            )
-
-        return AgentRecommendationResponse(
-            recommendations=[
-                AgentProblemRecommendation(
-                    problem_id=rec.problem_id,
-                    title=rec.title,
-                    platform=rec.platform,
-                    difficulty=rec.difficulty,
-                    url=rec.url,
-                    topics=rec.topics,
-                    reason=rec.reason,
-                    priority=rec.priority,
-                    likely_unsolved=rec.likely_unsolved,
-                )
-                for rec in result.recommendations
-            ],
-            agent_reasoning=result.agent_reasoning,
-            has_sufficient_data=result.has_sufficient_data,
-            catalog_limited=result.catalog_limited,
-            is_configured=True,
-            tool_calls_made=result.tool_calls_made,
-            error=result.error,
-            error_kind=result.error_kind,
-        )
-
-    except HTTPException:
-        raise
-
     except Exception as exc:
+        observability.record_run(
+            user_id=current_user.id,
+            endpoint=ENDPOINT_RECOMMEND,
+            model=getattr(agent, "last_model", None) or _model_name(),
+            latency_ms=int((time.monotonic() - started_at) * 1000),
+            cache_hit=False,
+            error_kind="unknown",
+        )
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail=f"AI recommendation agent error: {type(exc).__name__}",
         ) from exc
+
+    latency_ms = int((time.monotonic() - started_at) * 1000)
+    is_timeout = bool(result.error) and (
+        "timed out" in result.error.lower()
+        or "timeout" in result.error.lower()
+    )
+    error_kind = result.error_kind or ("timeout" if is_timeout else None)
+    recorded_error_kind = (
+        error_kind or ("agent_error" if result.error else None)
+    )
+
+    run = observability.record_run(
+        user_id=current_user.id,
+        endpoint=ENDPOINT_RECOMMEND,
+        model=getattr(agent, "last_model", None) or _model_name(),
+        latency_ms=latency_ms,
+        tool_calls=result.tool_calls_made,
+        usage=getattr(agent, "last_usage", None),
+        cache_hit=False,
+        error_kind=recorded_error_kind,
+    )
+
+    # Check for timeout-style errors
+    if result.error and is_timeout:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=result.error,
+        )
+
+    # Only successful, validated results are persisted and cached. A result
+    # counts as successful when there is no provider error_kind and either no
+    # error at all or recommendations survived verification (e.g. the
+    # max-iterations warning path still yields usable recommendations).
+    is_success = (
+        result.error_kind is None
+        and (result.error is None or bool(result.recommendations))
+    )
+
+    rec_id_map: dict[int, int] = {}
+    if is_success and run is not None:
+        rec_id_map = observability.persist_recommendations(
+            run_id=run.id,
+            user_id=current_user.id,
+            recommendations=result.recommendations,
+        )
+
+    refreshed_at = datetime.now(timezone.utc)
+    response_recs = [
+        AgentProblemRecommendation(
+            problem_id=rec.problem_id,
+            title=rec.title,
+            platform=rec.platform,
+            difficulty=rec.difficulty,
+            url=rec.url,
+            topics=rec.topics,
+            reason=rec.reason,
+            priority=rec.priority,
+            likely_unsolved=rec.likely_unsolved,
+            recommendation_id=(
+                rec_id_map.get(rec.problem_id) if rec.problem_id is not None else None
+            ),
+        )
+        for rec in result.recommendations
+    ]
+
+    response = AgentRecommendationResponse(
+        recommendations=response_recs,
+        agent_reasoning=result.agent_reasoning,
+        has_sufficient_data=result.has_sufficient_data,
+        catalog_limited=result.catalog_limited,
+        is_configured=True,
+        tool_calls_made=result.tool_calls_made,
+        error=result.error,
+        error_kind=result.error_kind,
+        from_cache=False,
+        refreshed_at=refreshed_at.isoformat(),
+    )
+
+    if is_success:
+        coach_cache.set_cached(
+            current_user.id,
+            fingerprint,
+            response.model_dump(exclude={"from_cache", "refreshed_at"}),
+            refreshed_at=refreshed_at,
+        )
+
+    return response
+
+
+@router.post("/ai-coach/feedback", response_model=FeedbackResponse)
+def submit_coach_feedback(
+    request: FeedbackRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> FeedbackResponse:
+    """Submit feedback on an AI problem recommendation.
+
+    The recommendation must belong to the authenticated user. Feedback is
+    idempotent: resubmitting the same ``(recommendation_id, action)`` pair
+    returns the existing record without creating a duplicate.
+    """
+    try:
+        feedback, created = submit_feedback(
+            db,
+            user_id=current_user.id,
+            recommendation_id=request.recommendation_id,
+            action=request.action,
+        )
+    except FeedbackNotFoundError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=str(exc),
+        ) from exc
+
+    return FeedbackResponse(
+        recommendation_id=feedback.recommendation_id,
+        action=feedback.action.value,
+        recorded=created,
+    )
 
 
 # ---------------------------------------------------------------------------

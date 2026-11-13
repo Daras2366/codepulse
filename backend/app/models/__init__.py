@@ -18,3 +18,5 @@ from .goal import Goal
 
 from .achievement import Achievement
 from .user_achievement import UserAchievement
+
+from .coach import CoachRun, CoachRecommendation, CoachFeedback

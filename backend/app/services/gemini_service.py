@@ -375,6 +375,12 @@ class GeminiService:
             self._configured = True
             self._client = genai.Client(api_key=api_key)
 
+        # Observability: model + token usage from the most recent successful
+        # call, when the provider returns them. Best-effort — stays None when
+        # the API does not expose usage metadata.
+        self.last_model: str | None = None
+        self.last_usage: dict | None = None
+
     def is_configured(self) -> bool:
         """Return True when an API key is present and the client is ready."""
         return self._configured
@@ -438,6 +444,8 @@ class GeminiService:
                         is_retryable=True,
                         kind=KIND_EMPTY_RESPONSE,
                     )
+                self.last_model = m
+                self.last_usage = self._extract_usage(interaction)
                 return text
 
             try:
@@ -469,6 +477,35 @@ class GeminiService:
 
         assert last_error is not None
         raise last_error
+
+    @staticmethod
+    def _extract_usage(interaction: object) -> dict | None:
+        """Best-effort token-usage extraction from an interaction response.
+
+        The Interactions API shape varies; try the known attribute names and
+        return None when nothing usable is present.
+        """
+        usage = getattr(interaction, "usage_metadata", None)
+        if usage is None:
+            usage = getattr(interaction, "usage", None)
+        if usage is None:
+            return None
+        out: dict = {}
+        for key in (
+            "prompt_token_count",
+            "candidates_token_count",
+            "total_token_count",
+            "input_tokens",
+            "output_tokens",
+            "total_tokens",
+        ):
+            value = getattr(usage, key, None)
+            # Only accept real numbers — mocked/odd objects must not leak in.
+            if isinstance(value, bool):
+                continue
+            if isinstance(value, (int, float)):
+                out[key] = int(value)
+        return out or None
 
     def _build_system_instruction(
         self, performance_summary: str, recommendations_summary: str

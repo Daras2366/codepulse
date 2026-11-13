@@ -579,6 +579,9 @@ class RecommendationAgent:
         # Token usage from the most recent successful generate_content call,
         # when the provider returns it. Used by the eval harness.
         self.last_usage: Optional[dict] = None
+        # Model that produced the most recent successful response (primary or
+        # fallback). Used for observability.
+        self.last_model: Optional[str] = None
 
     def is_configured(self) -> bool:
         """Return True when an API key is present and the client is ready."""
@@ -817,6 +820,7 @@ class RecommendationAgent:
                         (time.monotonic() - start) * 1000,
                     )
                     self.last_usage = self._extract_usage(response)
+                    self.last_model = model
                     return response
                 except Exception as exc:
                     duration_ms = (time.monotonic() - start) * 1000

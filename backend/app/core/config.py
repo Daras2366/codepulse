@@ -49,6 +49,20 @@ class Settings(BaseSettings):
     GEMINI_RETRY_BASE_DELAY_SECONDS: float = 0.5
     GEMINI_RETRY_MAX_DELAY_SECONDS: float = 8.0
 
+    # ---------------------------------------------------------------------------
+    # AI Coach caching & rate limiting (Stage 4)
+    # ---------------------------------------------------------------------------
+    # TTL for cached /ai-coach/recommend responses, in seconds (default 6h).
+    AI_COACH_RECOMMEND_CACHE_TTL_SECONDS: int = 6 * 60 * 60
+    # Per-user rate limits for the expensive AI Coach endpoints. These are
+    # IN-PROCESS limits: with multiple application workers each worker keeps
+    # its own counters, so the effective global limit is roughly
+    # limit * worker_count. A distributed store (e.g. Redis) is required for
+    # globally shared limits.
+    AI_COACH_RECOMMEND_RATE_LIMIT: int = 20
+    AI_COACH_CHAT_RATE_LIMIT: int = 60
+    AI_COACH_RATE_LIMIT_WINDOW_SECONDS: int = 60 * 60
+
     class Config:
         env_file = ".env"
 

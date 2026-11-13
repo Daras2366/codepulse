@@ -39,6 +39,13 @@ class GoalStatus(str, Enum):
     PAUSED = "paused"
 
 
+class CoachFeedbackAction(str, Enum):
+    SOLVED = "solved"
+    SKIPPED = "skipped"
+    THUMBS_UP = "thumbs_up"
+    THUMBS_DOWN = "thumbs_down"
+
+
 class AchievementCategory(str, Enum):
     PROBLEM = "problem"
     CONTEST = "contest"

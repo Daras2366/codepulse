@@ -31,6 +31,7 @@ from app.services.base_sync_service import (
     ProfileAccessDeniedError,
     UnsupportedPlatformError,
 )
+from app.services.coach_feedback_service import record_solved_for_submission
 
 logger = logging.getLogger(__name__)
 
@@ -444,6 +445,16 @@ class CodeforcesSyncService(BaseSyncService):
                     "database conflict."
                 ) from None
             return False, False, False, True
+
+        # AI Coach feedback: an ACCEPTED submission may satisfy a recent
+        # recommendation. Lightweight, user-scoped, failure-safe.
+        if submission.status == SubmissionStatus.ACCEPTED:
+            record_solved_for_submission(
+                self.db,
+                user_id=profile.user_id,
+                problem_id=problem.id,
+                submitted_at=submission.submitted_at,
+            )
 
         return (
             problem_created,
