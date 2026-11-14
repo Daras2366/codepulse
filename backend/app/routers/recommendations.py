@@ -6,11 +6,17 @@ Provides endpoints for:
 - AI Agent problem recommendations using Gemini function calling
 """
 
+import asyncio
+import json
+import logging
+import queue
+import threading
 import time
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from pydantic import BaseModel, field_validator, model_validator
+from fastapi.responses import StreamingResponse
+from pydantic import BaseModel, Field, field_validator, model_validator
 from sqlalchemy.orm import Session
 from typing import Optional
 
@@ -33,6 +39,7 @@ from app.services.coach_feedback_service import (
 )
 from app.services.coach_observability_service import (
     ENDPOINT_CHAT,
+    ENDPOINT_CHAT_STREAM,
     ENDPOINT_RECOMMEND,
     CoachObservabilityService,
 )
@@ -45,9 +52,12 @@ from app.services.gemini_service import (
     GeminiProviderError,
 )
 from app.services.recommendation_agent import (
+    CoachChatAgent,
     RecommendationAgent,
     AgentRecommendationResult,
 )
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -147,6 +157,7 @@ class ChatResponse(BaseModel):
 
     response: str
     is_configured: bool
+    tool_calls_made: list[str] = Field(default_factory=list)
 
 
 def _get_active_goals(db: Session, user_id: int) -> list[dict]:
@@ -221,6 +232,70 @@ async def chat_with_coach(
     started_at = time.monotonic()
     observability = CoachObservabilityService(db)
 
+    gemini_service = GeminiService()
+
+    # Convert validated ChatMessage objects back to plain dicts for the service.
+    history: list[dict[str, str]] | None = None
+    if request.conversation_history:
+        history = [
+            {"role": m.role, "content": m.content}
+            for m in request.conversation_history
+        ]
+
+    # Primary path: the tool-using chat agent fetches the user's real data
+    # through the shared ToolDispatcher (user_id always comes from the
+    # authenticated session, never from model arguments) instead of relying on
+    # an injected text summary. It runs synchronously, so it is offloaded to a
+    # worker thread to avoid blocking the event loop.
+    if gemini_service.is_configured():
+        agent = CoachChatAgent(
+            db, user_id=current_user.id, client=gemini_service.genai_client
+        )
+        result = await asyncio.to_thread(
+            agent.chat, request.message, history
+        )
+        latency_ms = int((time.monotonic() - started_at) * 1000)
+
+        if result.error is None and result.text:
+            observability.record_run(
+                user_id=current_user.id,
+                endpoint=ENDPOINT_CHAT,
+                model=getattr(agent, "last_model", None) or _model_name(),
+                latency_ms=latency_ms,
+                tool_calls=result.tool_calls_made,
+                usage=getattr(agent, "last_usage", None),
+                cache_hit=False,
+            )
+            return ChatResponse(
+                response=result.text,
+                is_configured=True,
+                tool_calls_made=result.tool_calls_made,
+            )
+
+        if result.error is not None:
+            observability.record_run(
+                user_id=current_user.id,
+                endpoint=ENDPOINT_CHAT,
+                model=getattr(agent, "last_model", None) or _model_name(),
+                latency_ms=latency_ms,
+                tool_calls=result.tool_calls_made,
+                usage=getattr(agent, "last_usage", None),
+                cache_hit=False,
+                error_kind=result.error_kind or "unknown",
+            )
+            http_status = (
+                status.HTTP_503_SERVICE_UNAVAILABLE
+                if result.error_retryable
+                else status.HTTP_502_BAD_GATEWAY
+            )
+            raise HTTPException(
+                status_code=http_status,
+                detail=f"AI Coach unavailable: {result.error}",
+            )
+
+        # The agent produced no usable text — fall through to the legacy
+        # single-shot path below.
+
     # Get authenticated user's performance data from the database.
     # This is rebuilt on every request — client cannot influence it.
     analyzer = PerformanceAnalyzer(db)
@@ -237,16 +312,6 @@ async def chat_with_coach(
     if active_goals:
         goal_lines = ", ".join(g["title"] for g in active_goals[:3])
         recommendations_summary += f"\n\nActive user goals: {goal_lines}"
-
-    # Convert validated ChatMessage objects back to plain dicts for the service.
-    history: list[dict[str, str]] | None = None
-    if request.conversation_history:
-        history = [
-            {"role": m.role, "content": m.content}
-            for m in request.conversation_history
-        ]
-
-    gemini_service = GeminiService()
 
     if not gemini_service.is_configured():
         observability.record_run(
@@ -328,6 +393,132 @@ async def chat_with_coach(
             error_kind="unknown",
         )
         raise
+
+
+def _sse_event(event: str, data: dict) -> str:
+    """Format one Server-Sent Events frame."""
+    return f"event: {event}\ndata: {json.dumps(data)}\n\n"
+
+
+@router.post("/ai-coach/chat/stream")
+async def chat_stream(
+    request: ChatRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> StreamingResponse:
+    """Streaming AI Coach chat over Server-Sent Events.
+
+    Event order: zero or more ``tool_call`` (tool name only — never arguments
+    or results), then ``token`` (answer text chunks), then exactly one ``done``
+    (``tool_calls_made`` + ``model``) or one ``error`` (``error_kind``).
+
+    The CHAT rate limit is applied before the stream starts, so a 429 is a
+    normal HTTP response — never an SSE event. The synchronous agent loop
+    runs in a worker thread; client disconnects cancel it via a threading
+    event and the DB session is released by the ``get_db`` dependency once
+    the response finishes.
+    """
+    _enforce_rate_limit(current_user.id, "CHAT")
+    started_at = time.monotonic()
+    observability = CoachObservabilityService(db)
+
+    gemini_service = GeminiService()
+    agent = CoachChatAgent(
+        db, user_id=current_user.id, client=gemini_service.genai_client
+    )
+    history: list[dict[str, str]] | None = None
+    if request.conversation_history:
+        history = [
+            {"role": m.role, "content": m.content}
+            for m in request.conversation_history
+        ]
+
+    async def event_stream():
+        events: "queue.Queue" = queue.Queue()
+        cancel = threading.Event()
+        sentinel = object()
+        tool_calls_made: list[str] = []
+        done_meta: dict = {}
+        error_kind: Optional[str] = None
+
+        def worker() -> None:
+            try:
+                for event in agent.stream_chat(request.message, history):
+                    if cancel.is_set():
+                        break
+                    events.put(event)
+            except Exception as exc:  # defensive — stream_chat handles its own
+                logger.warning(
+                    "chat_stream worker failed user_id=%d: %s",
+                    current_user.id,
+                    exc,
+                )
+                events.put(
+                    {
+                        "type": "error",
+                        "error_kind": "unknown",
+                        "error": "stream_failed",
+                    }
+                )
+            finally:
+                events.put(sentinel)
+
+        thread = threading.Thread(target=worker, daemon=True)
+        thread.start()
+        try:
+            while True:
+                event = await asyncio.to_thread(events.get)
+                if event is sentinel:
+                    break
+                event_type = event.get("type")
+                if event_type == "tool_call":
+                    tool_calls_made.append(str(event.get("name", "")))
+                    yield _sse_event(
+                        "tool_call", {"tool": event.get("name", "")}
+                    )
+                elif event_type == "token":
+                    yield _sse_event("token", {"text": event.get("text", "")})
+                elif event_type == "done":
+                    done_meta = event
+                    yield _sse_event(
+                        "done",
+                        {
+                            "tool_calls_made": event.get(
+                                "tool_calls_made", tool_calls_made
+                            ),
+                            "model": event.get("model")
+                            or getattr(agent, "last_model", None),
+                        },
+                    )
+                elif event_type == "error":
+                    error_kind = event.get("error_kind") or "unknown"
+                    yield _sse_event("error", {"error_kind": error_kind})
+        finally:
+            cancel.set()
+            await asyncio.to_thread(thread.join, 2.0)
+            observability.record_run(
+                user_id=current_user.id,
+                endpoint=ENDPOINT_CHAT_STREAM,
+                model=(
+                    done_meta.get("model")
+                    or getattr(agent, "last_model", None)
+                    or _model_name()
+                ),
+                latency_ms=int((time.monotonic() - started_at) * 1000),
+                tool_calls=tool_calls_made,
+                usage=getattr(agent, "last_usage", None),
+                cache_hit=False,
+                error_kind=error_kind,
+            )
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 def _build_performance_summary(profile: PerformanceProfile) -> str:

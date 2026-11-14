@@ -20,7 +20,7 @@ import * as React from "react";
 import { hasAccessToken } from "@/api/client";
 import { getPerformanceProfile, type PerformanceProfile } from "@/api/analytics";
 import {
-  chatWithCoach,
+  streamChatWithCoach,
   getAgentRecommendations,
   getRecommendations,
   getUpcomingContests,
@@ -758,62 +758,121 @@ function suggestedQuestions(profile: PerformanceProfile | undefined): string[] {
   return questions.slice(0, 4);
 }
 
-function ChatSection({ profile }: { profile: PerformanceProfile | undefined }) {
-  const queryClient = useQueryClient();
-  const chatMutation = useMutation({ mutationFn: chatWithCoach });
+const TOOL_STATUS_LABELS: Record<string, string> = {
+  get_user_performance_profile: "checking your overall stats…",
+  get_topic_performance: "checking your topic stats…",
+  get_recent_submissions: "reviewing your recent submissions…",
+  get_user_goals: "checking your practice goals…",
+  search_candidate_problems: "searching the problem catalog…",
+  get_problem_details: "verifying problem details…",
+  get_failure_patterns: "analysing your failure patterns…",
+  get_attempts_before_accept: "checking attempts per topic…",
+  get_stale_topics: "checking for stale topics…",
+  get_contest_postmortem: "reviewing your contest history…",
+};
 
+function toolStatusLabel(toolName: string): string {
+  return TOOL_STATUS_LABELS[toolName] ?? "checking your data…";
+}
+
+function ChatSection({ profile }: { profile: PerformanceProfile | undefined }) {
   const [message, setMessage] = React.useState("");
   const [conversationHistory, setConversationHistory] = React.useState<ChatMsg[]>([]);
   const [pendingUserMessage, setPendingUserMessage] = React.useState<string | null>(null);
+  const [isChatPending, setIsChatPending] = React.useState(false);
+  const [toolStatuses, setToolStatuses] = React.useState<string[]>([]);
+  const [streamText, setStreamText] = React.useState("");
+  const abortRef = React.useRef<AbortController | null>(null);
   const chatScrollRef = React.useRef<HTMLDivElement>(null);
+
+  // Abort any in-flight stream when the component unmounts.
+  React.useEffect(() => () => abortRef.current?.abort(), []);
 
   React.useEffect(() => {
     if (chatScrollRef.current) {
       chatScrollRef.current.scrollTop = chatScrollRef.current.scrollHeight;
     }
-  }, [conversationHistory, chatMutation.isPending]);
+  }, [conversationHistory, isChatPending, streamText, toolStatuses.length]);
 
   const handleSendMessage = (overrideMessage?: string) => {
     const text = (overrideMessage ?? message).trim();
-    if (!text || chatMutation.isPending) return;
+    if (!text || isChatPending) return;
 
     if (!overrideMessage) setMessage("");
     setPendingUserMessage(null);
-    chatMutation.reset();
+
+    abortRef.current?.abort();
+    const controller = new AbortController();
+    abortRef.current = controller;
 
     const priorHistory = conversationHistory;
     setConversationHistory([...priorHistory, { role: "user", content: text }]);
+    setToolStatuses([]);
+    setStreamText("");
+    setIsChatPending(true);
 
-    chatMutation.mutate(
+    let accumulated = "";
+    let settled = false;
+
+    const fail = (notConfigured = false) => {
+      if (settled) return;
+      settled = true;
+      setIsChatPending(false);
+      setToolStatuses([]);
+      setStreamText("");
+      if (notConfigured) {
+        // Provider not configured — keep the user message but show a
+        // system-style notice instead of a fabricated answer.
+        setConversationHistory((prev) => [
+          ...prev,
+          {
+            role: "assistant",
+            content:
+              "AI Coach is not configured. Set GEMINI_API_KEY in the backend " +
+              "environment to enable chat.",
+          },
+        ]);
+      } else {
+        setConversationHistory(priorHistory);
+        setPendingUserMessage(text);
+      }
+    };
+
+    streamChatWithCoach(
       { message: text, conversation_history: priorHistory },
       {
-        onSuccess: (data) => {
-          if (data.is_configured === false) {
-            // Provider not configured — keep the user message but show a
-            // system-style notice instead of a fabricated answer.
-            setConversationHistory((prev) => [
-              ...prev,
-              {
-                role: "assistant",
-                content:
-                  "AI Coach is not configured. Set GEMINI_API_KEY in the backend " +
-                  "environment to enable chat.",
-              },
-            ]);
-          } else {
-            setConversationHistory((prev) => [
-              ...prev,
-              { role: "assistant", content: data.response },
-            ]);
-          }
-          setPendingUserMessage(null);
+        onToolCall: (toolName) => {
+          setToolStatuses((prev) => [...prev, toolStatusLabel(toolName)]);
         },
-        onError: () => {
-          setConversationHistory(priorHistory);
-          setPendingUserMessage(text);
+        onToken: (chunk) => {
+          accumulated += chunk;
+          setStreamText(accumulated);
+        },
+        onDone: () => {
+          if (settled) return;
+          settled = true;
+          setConversationHistory((prev) => [
+            ...prev,
+            { role: "assistant", content: accumulated || "(no response)" },
+          ]);
+          setIsChatPending(false);
+          setToolStatuses([]);
+          setStreamText("");
+        },
+        onError: (errorKind) => {
+          fail(errorKind === "not_configured");
         },
       },
-    );
+      controller.signal,
+    )
+      .catch((err) => {
+        if (err instanceof DOMException && err.name === "AbortError") return;
+        fail();
+      })
+      .finally(() => {
+        // Stream ended without done/error (e.g. server closed early).
+        if (!settled && !controller.signal.aborted) fail();
+      });
   };
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
@@ -831,7 +890,7 @@ function ChatSection({ profile }: { profile: PerformanceProfile | undefined }) {
       caption="Powered by Gemini — answers are grounded in your actual backend performance data"
     >
       <div className="space-y-4">
-        {(conversationHistory.length > 0 || chatMutation.isPending) && (
+        {(conversationHistory.length > 0 || isChatPending) && (
           <div
             ref={chatScrollRef}
             className="max-h-96 space-y-3 overflow-y-auto rounded-2xl bg-muted/50 p-4"
@@ -854,16 +913,30 @@ function ChatSection({ profile }: { profile: PerformanceProfile | undefined }) {
               </div>
             ))}
 
-            {chatMutation.isPending && (
-              <div className="flex items-center gap-2 text-subtle">
-                <Loader2 className="h-4 w-4 animate-spin" />
-                <span className="text-caption">Thinking…</span>
+            {isChatPending && (
+              <div className="mr-auto max-w-[85%] space-y-2">
+                {toolStatuses.map((status, index) => (
+                  <p key={index} className="flex items-center gap-1.5 text-caption text-subtle">
+                    <Loader2 className="h-3 w-3 animate-spin" />
+                    {status}
+                  </p>
+                ))}
+                {streamText ? (
+                  <div className="rounded-2xl bg-card p-3">
+                    <Markdown content={streamText} />
+                  </div>
+                ) : toolStatuses.length === 0 ? (
+                  <div className="flex items-center gap-2 text-subtle">
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                    <span className="text-caption">Thinking…</span>
+                  </div>
+                ) : null}
               </div>
             )}
           </div>
         )}
 
-        {chatMutation.isError && pendingUserMessage && (
+        {pendingUserMessage && !isChatPending && (
           <div className="flex items-center justify-between gap-3 rounded-2xl border border-pink-soft bg-pink-soft/20 px-4 py-3">
             <div className="flex items-center gap-2 text-pink">
               <AlertCircle className="h-4 w-4 shrink-0" />
@@ -882,7 +955,7 @@ function ChatSection({ profile }: { profile: PerformanceProfile | undefined }) {
           </div>
         )}
 
-        {conversationHistory.length === 0 && !chatMutation.isPending && (
+        {conversationHistory.length === 0 && !isChatPending && (
           <div className="flex flex-wrap gap-2">
             {questions.map((question) => (
               <button
@@ -908,16 +981,16 @@ function ChatSection({ profile }: { profile: PerformanceProfile | undefined }) {
             placeholder="Ask about your performance, strengths, weaknesses, or request a study plan… (Enter to send, Shift+Enter for newline)"
             className="flex-1 resize-none rounded-2xl border border-border bg-background px-4 py-3 text-caption outline-none focus:border-violet"
             rows={2}
-            disabled={chatMutation.isPending}
+            disabled={isChatPending}
           />
           <button
             id="ai-coach-send-btn"
             onClick={() => handleSendMessage()}
-            disabled={!message.trim() || chatMutation.isPending}
+            disabled={!message.trim() || isChatPending}
             className="flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl bg-violet text-white transition-colors hover:bg-violet/90 disabled:cursor-not-allowed disabled:opacity-50"
             title="Send message"
           >
-            {chatMutation.isPending ? (
+            {isChatPending ? (
               <Loader2 className="h-5 w-5 animate-spin" />
             ) : (
               <Send className="h-5 w-5" />

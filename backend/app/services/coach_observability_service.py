@@ -29,6 +29,7 @@ logger = logging.getLogger(__name__)
 
 ENDPOINT_RECOMMEND = "ai-coach/recommend"
 ENDPOINT_CHAT = "ai-coach/chat"
+ENDPOINT_CHAT_STREAM = "ai-coach/chat/stream"
 
 
 def _usage_tokens(usage: Optional[dict]) -> tuple[Optional[int], Optional[int]]:
@@ -83,7 +84,7 @@ class CoachObservabilityService:
                 endpoint=endpoint,
                 model=model,
                 latency_ms=latency_ms,
-                tool_calls=list(tool_calls) if tool_calls else None,
+                tool_calls=list(tool_calls) if tool_calls is not None else None,
                 prompt_tokens=prompt_tokens,
                 completion_tokens=completion_tokens,
                 cache_hit=cache_hit,

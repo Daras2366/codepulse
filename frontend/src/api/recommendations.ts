@@ -1,4 +1,4 @@
-import { apiRequest } from "./client";
+import { API_BASE_URL, ApiError, clearAccessToken, getAccessToken, apiRequest } from "./client";
 
 export interface Recommendation {
   category: "topic" | "difficulty" | "consistency" | "contest";
@@ -45,6 +45,156 @@ export async function chatWithCoach(request: ChatRequest) {
     method: "POST",
     body: JSON.stringify(request),
   });
+}
+
+// ---------------------------------------------------------------------------
+// Streaming AI Coach chat (Server-Sent Events over POST + ReadableStream)
+// ---------------------------------------------------------------------------
+
+export interface ChatStreamDone {
+  tool_calls_made: string[];
+  model: string | null;
+}
+
+export interface ChatStreamHandlers {
+  /** Tool name only — never arguments or results. */
+  onToolCall?: (toolName: string) => void;
+  /** A chunk of the final answer text. */
+  onToken?: (text: string) => void;
+  /** Exactly one per successful stream. */
+  onDone?: (meta: ChatStreamDone) => void;
+  /** Exactly one per failed stream (instead of onDone). */
+  onError?: (errorKind: string) => void;
+}
+
+interface SseMessage {
+  event: string;
+  data: unknown;
+}
+
+function parseSseBlock(block: string): SseMessage | null {
+  let event = "message";
+  const dataLines: string[] = [];
+  for (const line of block.split("\n")) {
+    if (line.startsWith("event:")) {
+      event = line.slice(6).trim();
+    } else if (line.startsWith("data:")) {
+      dataLines.push(line.slice(5).trimStart());
+    }
+  }
+  if (dataLines.length === 0) return null;
+  try {
+    return { event, data: JSON.parse(dataLines.join("\n")) };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * POST /ai-coach/chat/stream and consume the SSE stream.
+ *
+ * EventSource cannot POST, so this uses fetch + ReadableStream. Resolves when
+ * the stream ends; rejects with ApiError for HTTP failures (401/429/5xx) that
+ * occur before the stream starts. Pass an AbortSignal to cancel.
+ */
+export async function streamChatWithCoach(
+  request: ChatRequest,
+  handlers: ChatStreamHandlers,
+  signal?: AbortSignal,
+): Promise<void> {
+  const token = getAccessToken();
+  if (!token) {
+    throw new ApiError("Sign in to view your dashboard.", 401);
+  }
+
+  let response: Response;
+  try {
+    response = await fetch(`${API_BASE_URL}/ai-coach/chat/stream`, {
+      method: "POST",
+      headers: {
+        Accept: "text/event-stream",
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify(request),
+      signal: signal ?? null,
+    });
+  } catch (err) {
+    if (err instanceof DOMException && err.name === "AbortError") throw err;
+    throw new ApiError("Unable to reach CodePulse. Check your connection and try again.");
+  }
+
+  if (!response.ok) {
+    const payload: unknown = await response.json().catch(() => null);
+    const detail =
+      typeof payload === "object" &&
+      payload !== null &&
+      "detail" in payload &&
+      typeof payload.detail === "string"
+        ? payload.detail
+        : "The AI Coach is unavailable right now.";
+    if (response.status === 401) {
+      clearAccessToken();
+    }
+    throw new ApiError(detail, response.status);
+  }
+
+  if (!response.body) {
+    throw new ApiError("Streaming is not supported by this browser.");
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      let sep: number;
+      while ((sep = buffer.indexOf("\n\n")) !== -1) {
+        const block = buffer.slice(0, sep);
+        buffer = buffer.slice(sep + 2);
+        const message = parseSseBlock(block);
+        if (!message) continue;
+        const data = message.data as Record<string, unknown>;
+        if (message.event === "tool_call") {
+          handlers.onToolCall?.(String(data["tool"] ?? ""));
+        } else if (message.event === "token") {
+          handlers.onToken?.(String(data["text"] ?? ""));
+        } else if (message.event === "done") {
+          handlers.onDone?.({
+            tool_calls_made: Array.isArray(data["tool_calls_made"])
+              ? (data["tool_calls_made"] as string[])
+              : [],
+            model: typeof data["model"] === "string" ? data["model"] : null,
+          });
+        } else if (message.event === "error") {
+          handlers.onError?.(String(data["error_kind"] ?? "unknown"));
+        }
+      }
+    }
+    // Flush any trailing event that arrived without a final blank line.
+    const tail = buffer.trim();
+    if (tail) {
+      const message = parseSseBlock(tail);
+      if (message) {
+        const data = message.data as Record<string, unknown>;
+        if (message.event === "done") {
+          handlers.onDone?.({
+            tool_calls_made: Array.isArray(data["tool_calls_made"])
+              ? (data["tool_calls_made"] as string[])
+              : [],
+            model: typeof data["model"] === "string" ? data["model"] : null,
+          });
+        } else if (message.event === "error") {
+          handlers.onError?.(String(data["error_kind"] ?? "unknown"));
+        }
+      }
+    }
+  } finally {
+    reader.releaseLock();
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -98,10 +248,7 @@ export interface CoachFeedbackResponse {
   recorded: boolean;
 }
 
-export async function submitCoachFeedback(
-  recommendationId: number,
-  action: CoachFeedbackAction,
-) {
+export async function submitCoachFeedback(recommendationId: number, action: CoachFeedbackAction) {
   return apiRequest<CoachFeedbackResponse>("/ai-coach/feedback", {
     method: "POST",
     body: JSON.stringify({ recommendation_id: recommendationId, action }),

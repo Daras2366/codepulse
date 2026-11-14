@@ -1,4 +1,4 @@
-const API_BASE_URL = import.meta.env["VITE_API_BASE_URL"] ?? "http://127.0.0.1:8000";
+export const API_BASE_URL = import.meta.env["VITE_API_BASE_URL"] ?? "http://127.0.0.1:8000";
 const ACCESS_TOKEN_KEY = "codepulse.access_token";
 
 export class ApiError extends Error {
@@ -14,7 +14,7 @@ export class ApiError extends Error {
 /**
  * Clear the JWT access token from localStorage
  */
-function clearAccessToken() {
+export function clearAccessToken() {
   if (typeof window === "undefined") return;
   window.localStorage.removeItem(ACCESS_TOKEN_KEY);
   window.dispatchEvent(new Event("codepulse-auth-change"));
@@ -31,7 +31,7 @@ export function hasAccessToken() {
   return Boolean(window.localStorage.getItem(ACCESS_TOKEN_KEY));
 }
 
-function getAccessToken() {
+export function getAccessToken() {
   return typeof window === "undefined" ? null : window.localStorage.getItem(ACCESS_TOKEN_KEY);
 }
 

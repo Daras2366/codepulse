@@ -385,6 +385,11 @@ class GeminiService:
         """Return True when an API key is present and the client is ready."""
         return self._configured
 
+    @property
+    def genai_client(self):
+        """Underlying google-genai client (exposes ``.models`` for tool calling)."""
+        return self._client
+
     async def generate_coach_response(
         self,
         user_message: str,
