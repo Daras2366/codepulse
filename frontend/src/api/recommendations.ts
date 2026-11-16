@@ -273,8 +273,16 @@ export interface StudyPlanProblem {
 export interface StudyPlanDailyTarget {
   solved_today: number;
   daily_target: number | null;
-  target_label: string | null;
+  /**
+   * - `"goal"`: target derived from an active goal with a future deadline.
+   * - `"goal_issue"`: a problem-type goal exists but cannot yield a target
+   *   (overdue or missing deadline); `target_label` contains an actionable
+   *   hint and `daily_target` is null.
+   * - `null`: no problem-type goals exist at all.
+   */
   target_source: string | null;
+  /** Descriptive label for the target, or an actionable hint when `target_source === "goal_issue"`. */
+  target_label: string | null;
   timezone: string;
 }
 

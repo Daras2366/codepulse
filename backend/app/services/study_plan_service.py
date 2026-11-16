@@ -222,18 +222,49 @@ class StudyPlanService:
         preferred = self._preferred_difficulties(profile)
         diff_rank = {d: i for i, d in enumerate(preferred)}
 
-        query = self._db.query(Problem).filter(
-            Problem.id.notin_(solved_ids) if solved_ids else True
-        )
+        base_filter = Problem.id.notin_(solved_ids) if solved_ids else True
 
-        candidates = (
-            query.order_by(
-                Problem.acceptance_rate.desc().nullslast(),
-                Problem.id.asc(),
+        candidates: list[Problem] = []
+
+        # When a focus topic is set, query the topic-matched pool first so the
+        # top-100-by-acceptance-rate filter doesn't silently exclude all matches.
+        if focus_topic:
+            topic_candidates = (
+                self._db.query(Problem)
+                .join(ProblemTopic, ProblemTopic.problem_id == Problem.id)
+                .join(Topic, Topic.id == ProblemTopic.topic_id)
+                .filter(
+                    base_filter,
+                    Topic.name.ilike(f"%{focus_topic}%"),
+                )
+                .order_by(
+                    Problem.acceptance_rate.desc().nullslast(),
+                    Problem.id.asc(),
+                )
+                .limit(_CANDIDATE_POOL)
+                .all()
             )
-            .limit(_CANDIDATE_POOL)
-            .all()
-        )
+            candidates = list({p.id: p for p in topic_candidates}.values())
+
+        # Top up (or fill entirely when no focus) from the general unsolved pool,
+        # de-duplicating by id against anything already fetched above.
+        already_ids = {p.id for p in candidates}
+        if len(candidates) < PLAN_SIZE:
+            general_candidates = (
+                self._db.query(Problem)
+                .filter(base_filter)
+                .order_by(
+                    Problem.acceptance_rate.desc().nullslast(),
+                    Problem.id.asc(),
+                )
+                .limit(_CANDIDATE_POOL)
+                .all()
+            )
+            for p in general_candidates:
+                if p.id not in already_ids:
+                    candidates.append(p)
+                    already_ids.add(p.id)
+
         if not candidates:
             return []
 
@@ -344,46 +375,87 @@ class StudyPlanService:
         self, user_id: int
     ) -> tuple[Optional[int], Optional[str], Optional[str]]:
         """Derive a daily problem target from the nearest-deadline active
-        problem-count goal. Returns (target, label, source) — all None when no
-        suitable goal exists (never invent a default)."""
-        goals = (
+        problem-count goal. Returns (target, label, source) where:
+
+        - On success: target is a positive int, label describes it, source="goal".
+        - When a qualifying goal exists but is unusable (overdue / no deadline):
+          target=None, label=actionable hint, source="goal_issue".
+        - When no problem-type goals exist at all: all None (original behaviour).
+
+        Never invents a default target.
+        """
+        # Fetch ALL active problem-type goals (with and without deadline,
+        # overdue and future) so we can give a useful hint even when no target
+        # can be derived.
+        all_goals = (
             self._db.query(Goal)
             .filter(
                 Goal.user_id == user_id,
                 Goal.status == GoalStatus.ACTIVE,
                 Goal.goal_type.in_(_PROBLEM_GOAL_TYPES),
-                Goal.deadline.isnot(None),
             )
-            .order_by(Goal.deadline.asc())
+            .order_by(Goal.deadline.asc().nullslast(), Goal.created_at.asc())
             .all()
         )
-        if not goals:
+        if not all_goals:
             return None, None, None
 
         calculator = GoalProgressCalculator(self._db)
         today = datetime.now(timezone.utc).date()
 
         best: tuple[int, str, int] | None = None  # (days_remaining, title, target)
-        for goal in goals:
+        overdue_goal: Optional[Goal] = None
+        no_deadline_goal: Optional[Goal] = None
+
+        for goal in all_goals:
+            if goal.deadline is None:
+                # Track the first no-deadline goal as a fallback hint.
+                if no_deadline_goal is None:
+                    no_deadline_goal = goal
+                continue
+
             result = calculator.calculate(goal)
             if result.is_completed or result.remaining <= 0:
                 continue
+
             if result.days_remaining is None or result.days_remaining <= 0:
+                # Overdue — track the nearest-deadline overdue goal for the hint.
+                if overdue_goal is None:
+                    overdue_goal = goal
                 continue
+
             daily = math.ceil(result.remaining / result.days_remaining)
             candidate = (result.days_remaining, goal.title, daily)
             if best is None or candidate[0] < best[0]:
                 best = candidate
 
-        if best is None:
-            return None, None, None
+        if best is not None:
+            days_remaining, title, daily = best
+            return (
+                daily,
+                f"{daily} problems/day to reach \"{title}\" ({days_remaining} days left)",
+                "goal",
+            )
 
-        days_remaining, title, daily = best
-        return (
-            daily,
-            f"{daily} problems/day to reach \"{title}\" ({days_remaining} days left)",
-            "goal",
-        )
+        # No actionable goal found — return an informative hint if possible.
+        # Priority: overdue (nearest deadline) > no-deadline.
+        if overdue_goal is not None:
+            return (
+                None,
+                f"Goal \"{overdue_goal.title}\" is overdue. "
+                "Extend its deadline to get a daily target.",
+                "goal_issue",
+            )
+        if no_deadline_goal is not None:
+            return (
+                None,
+                f"Goal \"{no_deadline_goal.title}\" has no deadline. "
+                "Add one to get a daily target.",
+                "goal_issue",
+            )
+
+        # All goals were completed or had remaining=0.
+        return None, None, None
 
     # ------------------------------------------------------------------
     # Upcoming contest

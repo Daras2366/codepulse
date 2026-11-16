@@ -197,7 +197,6 @@ function StudyPlanBody({ plan, onRefresh }: { plan: StudyPlanResponse; onRefresh
                   </div>
                 )}
               </div>
-              <p className="text-caption mt-3 text-subtle">{plan.estimate_note}</p>
             </>
           ) : (
             <div className="mt-5">
@@ -245,14 +244,20 @@ function StudyPlanBody({ plan, onRefresh }: { plan: StudyPlanResponse; onRefresh
               <>
                 <p className="text-h2 mt-1">{plan.daily.solved_today} solved today</p>
                 <p className="text-caption mt-3 text-muted-foreground">
-                  No daily target yet —{" "}
-                  <Link
-                    to="/goals"
-                    className="font-medium text-violet underline underline-offset-2"
-                  >
-                    create a goal
-                  </Link>{" "}
-                  to get a personalized daily target.
+                  {plan.daily.target_label != null ? (
+                    plan.daily.target_label
+                  ) : (
+                    <>
+                      No daily target yet —{" "}
+                      <Link
+                        to="/goals"
+                        className="font-medium text-violet underline underline-offset-2"
+                      >
+                        create a goal
+                      </Link>{" "}
+                      to get a personalized daily target.
+                    </>
+                  )}
                 </p>
               </>
             )}

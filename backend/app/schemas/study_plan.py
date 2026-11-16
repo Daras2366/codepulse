@@ -24,6 +24,13 @@ class StudyPlanDailyTarget(BaseModel):
     ``daily_target`` is ``None`` when the user has no active goal with a
     deadline — the UI must prompt the user to create a goal rather than
     inventing a number.
+
+    ``target_source`` values:
+    - ``"goal"`` — target derived from a goal with a future deadline.
+    - ``"goal_issue"`` — a problem-type goal exists but cannot yield a target
+      (e.g. overdue or missing deadline); ``target_label`` contains an
+      actionable hint; ``daily_target`` is ``None``.
+    - ``None`` — no problem-type goals exist at all.
     """
 
     solved_today: int

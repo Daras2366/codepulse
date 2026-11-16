@@ -657,16 +657,15 @@ real practice problems to the user based on their actual performance data.
 
 ## Workflow
 
-1. ALWAYS start by calling `get_user_performance_profile` AND `get_topic_performance` in your first turn.
-2. Then call `get_failure_patterns` and `get_stale_topics` to learn how the user fails \
-and which solved topics are going stale.
-3. Call `get_attempts_before_accept` when judging whether a topic is ready for harder problems.
-4. Optionally call `get_user_goals` to align with the user's stated goals. Call \
-`get_contest_postmortem` ONLY if the user has contest data or a contest-related goal.
-5. Call `search_candidate_problems` to find real, unsolved problems — use weak topic areas, \
-   appropriate difficulty, and relevant platform filters.
-6. Optionally call `get_problem_details` on 1-3 promising candidates to verify details.
-7. Select 3-5 problems and prepare your final JSON response.
+The user's performance data (profile, topic breakdown, failure patterns, stale topics, goals) \
+is already provided in the first message — do NOT call tools to fetch it again.
+
+1. Read the pre-fetched data in the first message carefully.
+2. Call `search_candidate_problems` to find real, unsolved problems — use weak topic areas, \
+   appropriate difficulty, and relevant platform filters. You may call it multiple times \
+   with different filters (e.g. different topics or difficulties).
+3. Optionally call `get_problem_details` on 1-3 promising candidates to verify details.
+4. Select 3-5 problems and prepare your final JSON response.
 
 ## Rules
 
@@ -676,10 +675,10 @@ and which solved topics are going stale.
 - If the user has insufficient data (fewer than 5 submissions), say so explicitly.
 - Prioritise problems in topics where the user is "weak" or "moderate" strength.
 - Match difficulty to the user's level (do not recommend Hard problems to beginners).
-- Every recommendation's "reason" MUST cite a specific fact returned by a tool — \
+- Every recommendation's "reason" MUST cite a specific fact from the provided data — \
 e.g. a topic name, a verdict type (wrong_answer, time_limit_exceeded), a staleness \
-gap in days, or an attempts-before-accept count. Do NOT state facts that no tool \
-returned. If a tool result contains a "limitation" field, do NOT claim the missing \
+gap in days, or an attempts-before-accept count. Do NOT state facts that no data \
+returned. If the data contains a "limitation" field, do NOT claim the missing \
 detail (e.g. do not describe per-problem contest breakdowns).
 
 ## Final Response
@@ -703,10 +702,26 @@ in the catalog.
 # ---------------------------------------------------------------------------
 
 _MAX_ITERATIONS = 6
-# Hard cap on total function calls across all iterations. When reached,
-# excess calls get a "finalize" tool result and the loop exits to the
-# no-tools final generation below.
+# Hard cap on tool calls during the agent loop. With data pre-fetched,
+# the model only needs search_candidate_problems + get_problem_details,
+# so this cap is comfortably above the typical 2-6 calls needed.
 _MAX_TOOL_CALLS = 10
+
+# Tool names eligible for pre-fetching (deterministic, no arguments).
+_PREFETCH_TOOLS = [
+    "get_user_performance_profile",
+    "get_topic_performance",
+    "get_failure_patterns",
+    "get_stale_topics",
+    "get_user_goals",
+]
+
+# The agent loop is restricted to only these two tools — all profile data
+# is pre-fetched server-side and embedded in the first user message.
+_SEARCH_TOOL_NAMES = {"search_candidate_problems", "get_problem_details"}
+_SEARCH_TOOL_DECLARATIONS = [
+    td for td in _TOOL_DECLARATIONS if td.name in _SEARCH_TOOL_NAMES
+]
 
 
 class _GeminiToolAgent:
@@ -792,6 +807,16 @@ class _GeminiToolAgent:
             content = response.candidates[0].content
             if getattr(content, "parts", None):
                 parts = list(content.parts)
+        # Log MAX_TOKENS finish reason so it is visible in server logs.
+        if response.candidates:
+            finish_reason = getattr(response.candidates[0], "finish_reason", None)
+            finish_str = str(finish_reason) if finish_reason is not None else ""
+            if "MAX_TOKENS" in finish_str:
+                logger.warning(
+                    "gemini_call endpoint=%s finish_reason=MAX_TOKENS — "
+                    "response was truncated; consider raising max_output_tokens",
+                    self._log_endpoint,
+                )
         return AgentTurn(
             content=content,
             parts=parts,
@@ -848,29 +873,59 @@ class _GeminiToolAgent:
     def _run_agent_loop(self) -> AgentRecommendationResult:
         """Synchronous agent loop — runs generate_content repeatedly until text response.
 
+        Pre-fetches deterministic profile data server-side before the first
+        model call so the model only needs to call search_candidate_problems
+        and get_problem_details, keeping tool-call counts well below the cap.
+
         Returns:
             AgentRecommendationResult.
         """
-        # Initial user message to trigger the agent workflow
+        # ------------------------------------------------------------------
+        # Phase 1: Pre-fetch deterministic data server-side (Fix 4).
+        # Each tool is called via the dispatcher (security boundary respected).
+        # Failures are recorded as {"error": "..."} — one bad tool won't abort.
+        # ------------------------------------------------------------------
+        prefetched: dict[str, Any] = {}
+        for tool_name in _PREFETCH_TOOLS:
+            try:
+                prefetched[tool_name] = self._dispatcher.dispatch(tool_name, {})
+            except Exception as exc:  # pragma: no cover
+                logger.warning(
+                    "RecommendationAgent: prefetch tool=%s failed: %s",
+                    tool_name,
+                    exc,
+                )
+                prefetched[tool_name] = {"error": str(exc)}
+
+        # ------------------------------------------------------------------
+        # Phase 2: Build first user message with prefetched data.
+        # ------------------------------------------------------------------
+        prefetch_json = json.dumps(prefetched, default=str)
+        first_message = (
+            "Here is your pre-fetched performance data. "
+            "Do NOT call these tools again — the data is already included below.\n\n"
+            f"{prefetch_json}\n\n"
+            "Using only `search_candidate_problems` and `get_problem_details`, "
+            "find and recommend 3-5 specific problems I should solve next to improve my skills."
+        )
+
         contents: list[types.Content] = [
             types.Content(
                 role="user",
-                parts=[
-                    types.Part(
-                        text=(
-                            "Please analyse my practice profile and recommend 3-5 specific "
-                            "problems I should solve next to improve my skills."
-                        )
-                    )
-                ],
+                parts=[types.Part(text=first_message)],
             )
         ]
 
         config = types.GenerateContentConfig(
             system_instruction=_SYSTEM_PROMPT,
             temperature=0.4,
-            max_output_tokens=2500,
-            tools=[types.Tool(function_declarations=_TOOL_DECLARATIONS)],
+            # Raised from 2500: thinking tokens count against this on Gemini 3.x Flash.
+            max_output_tokens=4096,
+            # Low thinking level keeps reasoning overhead small while still
+            # allowing the model to reason about which problems to recommend.
+            thinking_config=types.ThinkingConfig(thinking_level="low"),
+            # Restrict to only search tools — profile data is pre-fetched.
+            tools=[types.Tool(function_declarations=_SEARCH_TOOL_DECLARATIONS)],
             tool_config=types.ToolConfig(
                 function_calling_config=types.FunctionCallingConfig(mode="AUTO")
             ),
@@ -919,12 +974,23 @@ class _GeminiToolAgent:
             outcome.call_count,
         )
 
+        # Append an explicit instruction so the no-tools generation knows
+        # exactly what to do (Fix 4 — exhausted-loop fallback nudge).
+        contents.append(
+            types.Content(
+                role="user",
+                parts=[types.Part(text="Produce the final JSON response now.")],
+            )
+        )
+
         # Try one more generate without tools to force a text response
         try:
             final_config = types.GenerateContentConfig(
                 system_instruction=_SYSTEM_PROMPT,
                 temperature=0.4,
-                max_output_tokens=2000,
+                # Raised from 2000 (Fix 1).
+                max_output_tokens=4096,
+                thinking_config=types.ThinkingConfig(thinking_level="low"),
                 response_mime_type="application/json",
                 response_schema=_FINAL_RESPONSE_SCHEMA,
             )
@@ -1111,6 +1177,11 @@ class _GeminiToolAgent:
                 try:
                     data = json.loads(json_text[start:end])
                 except json.JSONDecodeError:
+                    logger.warning(
+                        "RecommendationAgent: could not parse JSON from model response "
+                        "(embedded object attempt failed); first 300 chars: %r",
+                        text[:300],
+                    )
                     return AgentRecommendationResult(
                         tool_calls_made=tool_calls_made,
                         agent_reasoning=text[:500],
@@ -1118,6 +1189,11 @@ class _GeminiToolAgent:
                         has_sufficient_data=False,
                     )
             else:
+                logger.warning(
+                    "RecommendationAgent: model response contained no JSON object; "
+                    "first 300 chars: %r",
+                    text[:300],
+                )
                 return AgentRecommendationResult(
                     tool_calls_made=tool_calls_made,
                     agent_reasoning=text[:500],
@@ -1402,6 +1478,28 @@ class _GeminiToolAgent:
                         else None
                     )
                     self.last_model = model
+                    # Detect MAX_TOKENS truncation and yield a continuation hint.
+                    if last_chunk is not None:
+                        last_candidates = getattr(last_chunk, "candidates", None)
+                        last_finish = (
+                            getattr(last_candidates[0], "finish_reason", None)
+                            if last_candidates
+                            else None
+                        )
+                        last_finish_str = str(last_finish) if last_finish is not None else ""
+                        if "MAX_TOKENS" in last_finish_str:
+                            logger.warning(
+                                "gemini_call endpoint=%s model=%s finish_reason=MAX_TOKENS "
+                                "— response was truncated",
+                                log_endpoint,
+                                model,
+                            )
+                            continuation_hint = (
+                                "\n\n_(Response was cut off. Ask me to continue.)_"
+                            )
+                            chunks.append(continuation_hint)
+                            if emit_ok:
+                                yield ("token", continuation_hint)
                     content = (
                         types.Content(role="model", parts=parts)
                         if parts
@@ -1567,7 +1665,11 @@ class CoachChatAgent(_GeminiToolAgent):
         kwargs: dict = {
             "system_instruction": _CHAT_SYSTEM_PROMPT,
             "temperature": 0.7,
-            "max_output_tokens": 1000,
+            # Raised from 1000: thinking tokens count against this budget on
+            # Gemini 3.x Flash, so short limit caused mid-answer truncation.
+            "max_output_tokens": 4096,
+            # Keep thinking overhead low for chat — we want fast, concise answers.
+            "thinking_config": types.ThinkingConfig(thinking_level="low"),
         }
         if with_tools:
             kwargs["tools"] = [

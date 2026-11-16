@@ -548,7 +548,15 @@ def _make_multi_function_call_response(n_calls: int, call_prefix: str) -> MagicM
 class TestToolCallCap:
     def test_loop_terminates_at_cap_and_finalises(self, db, user_a):
         """A model that keeps calling tools must stop at _MAX_TOOL_CALLS
-        and still produce a final parsed response."""
+        and still produce a final parsed response.
+
+        Note: since Fix 4, the agent pre-fetches deterministic data via the
+        dispatcher before the first model call. Those prefetch calls appear in
+        agent._dispatcher.tool_results but are NOT counted in
+        result.tool_calls_made (which tracks only loop-dispatched calls).
+        """
+        from app.services.recommendation_agent import _PREFETCH_TOOLS
+
         final_json = json.dumps(
             {
                 "recommendations": [],
@@ -577,9 +585,11 @@ class TestToolCallCap:
                 agent = RecommendationAgent(db, user_a.id)
                 result = agent.recommend()
 
-        # Exactly _MAX_TOOL_CALLS were dispatched; the rest got finalize msgs.
+        # Exactly _MAX_TOOL_CALLS were dispatched through the agent loop.
         assert len(result.tool_calls_made) == _MAX_TOOL_CALLS
-        assert len(agent._dispatcher.tool_results) == _MAX_TOOL_CALLS
+        # tool_results includes prefetch calls + loop-dispatched calls.
+        n_prefetch = len(_PREFETCH_TOOLS)
+        assert len(agent._dispatcher.tool_results) == n_prefetch + _MAX_TOOL_CALLS
         # 4 tool-call turns + 1 forced final generation.
         assert mock_client.models.generate_content.call_count == 5
         # A final response was still produced and parsed. The post-loop
