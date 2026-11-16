@@ -63,6 +63,7 @@ router = APIRouter()
 
 _VALID_ROLES = {"user", "assistant"}
 _MAX_MESSAGE_LEN = 1000
+_MAX_HISTORY_MESSAGE_LEN = 8000
 _MAX_HISTORY_MESSAGES = 10
 
 
@@ -115,11 +116,7 @@ class ChatMessage(BaseModel):
     @field_validator("content")
     @classmethod
     def validate_content(cls, v: str) -> str:
-        if len(v) > _MAX_MESSAGE_LEN:
-            raise ValueError(
-                f"Message in history too long (max {_MAX_MESSAGE_LEN} characters)"
-            )
-        return v
+        return v[:_MAX_HISTORY_MESSAGE_LEN]
 
 
 class ChatRequest(BaseModel):

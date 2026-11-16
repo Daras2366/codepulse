@@ -16,6 +16,7 @@ import json
 import logging
 import time
 from dataclasses import dataclass, field
+from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Iterator, Optional
 
 from google import genai
@@ -27,6 +28,7 @@ from app.core.config import settings
 from app.models.problem import Problem
 from app.models.problem_topic import ProblemTopic
 from app.models.topic import Topic
+from app.repositories.coach_repository import CoachRecommendationRepository
 from app.services.agent_tools import (
     get_attempts_before_accept,
     get_contest_postmortem,
@@ -674,6 +676,7 @@ is already provided in the first message — do NOT call tools to fetch it again
 - If the problem catalog has fewer than 5 candidates, acknowledge catalog limitations honestly.
 - If the user has insufficient data (fewer than 5 submissions), say so explicitly.
 - Prioritise problems in topics where the user is "weak" or "moderate" strength.
+- Never recommend problems listed in disliked_recommendations again; avoid weighting their topics.
 - Match difficulty to the user's level (do not recommend Hard problems to beginners).
 - Every recommendation's "reason" MUST cite a specific fact from the provided data — \
 e.g. a topic name, a verdict type (wrong_answer, time_limit_exceeded), a staleness \
@@ -896,6 +899,16 @@ class _GeminiToolAgent:
                     exc,
                 )
                 prefetched[tool_name] = {"error": str(exc)}
+
+        try:
+            prefetched["disliked_recommendations"] = (
+                CoachRecommendationRepository(self._db).get_recent_disliked_problems(
+                    self._user_id, datetime.now(timezone.utc) - timedelta(days=30)
+                )
+            )
+        except Exception as exc:
+            logger.warning("RecommendationAgent: disliked recommendations prefetch failed: %s", exc)
+            prefetched["disliked_recommendations"] = []
 
         # ------------------------------------------------------------------
         # Phase 2: Build first user message with prefetched data.

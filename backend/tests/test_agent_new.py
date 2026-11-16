@@ -22,7 +22,9 @@ from sqlalchemy.pool import StaticPool
 
 import app.models  # noqa: F401 — registers all ORM models
 from app.models.base import Base
+from app.models.coach import CoachFeedback, CoachRecommendation, CoachRun
 from app.models.enums import (
+    CoachFeedbackAction,
     Difficulty,
     GoalStatus,
     GoalType,
@@ -36,6 +38,7 @@ from app.models.problem_topic import ProblemTopic
 from app.models.submission import Submission
 from app.models.topic import Topic
 from app.models.user import User
+from app.repositories.coach_repository import CoachRecommendationRepository
 from app.services.recommendation_agent import (
     RecommendationAgent,
     ToolDispatcher,
@@ -408,6 +411,86 @@ class TestRecommendationAgentPrefetch:
             assert tool in first_message_text, (
                 f"Prefetched tool '{tool}' data missing from first user message"
             )
+        assert '"disliked_recommendations": []' in first_message_text
+
+    def test_recent_dislikes_include_only_titles_and_topics(self, db, test_user, topics):
+        other_user = User(
+            username="other_dislikes", email="other_dislikes@example.com",
+            password_hash="hashed", is_active=True,
+        )
+        db.add(other_user)
+        db.flush()
+        now = datetime.now(timezone.utc)
+        for index, (owner, age, action) in enumerate([
+            (test_user, 1, CoachFeedbackAction.THUMBS_DOWN),
+            (test_user, 31, CoachFeedbackAction.THUMBS_DOWN),
+            (test_user, 1, CoachFeedbackAction.THUMBS_UP),
+            (other_user, 1, CoachFeedbackAction.THUMBS_DOWN),
+        ]):
+            problem = Problem(
+                platform=Platform.CODEFORCES,
+                platform_problem_id=f"disliked-{index}",
+                title=f"Disliked test problem {index}",
+                slug=f"disliked-test-{index}",
+                problem_url=f"https://example.com/disliked-{index}",
+                difficulty=Difficulty.EASY,
+            )
+            db.add(problem)
+            db.flush()
+            db.add(ProblemTopic(problem_id=problem.id, topic_id=topics["array"].id))
+            run = CoachRun(user_id=owner.id, endpoint="ai-coach/recommend")
+            db.add(run)
+            db.flush()
+            rec = CoachRecommendation(
+                run_id=run.id, user_id=owner.id, problem_id=problem.id, rank=1,
+            )
+            db.add(rec)
+            db.flush()
+            db.add(CoachFeedback(
+                recommendation_id=rec.id, action=action,
+                created_at=now - timedelta(days=age),
+            ))
+        db.commit()
+
+        repo = CoachRecommendationRepository(db)
+        result = repo.get_recent_disliked_problems(
+            test_user.id, now - timedelta(days=30), limit=20,
+        )
+        assert result == [{"title": "Disliked test problem 0", "topics": ["Array"]}]
+        assert repo.get_recent_disliked_problems(
+            test_user.id, now - timedelta(days=30), limit=0,
+        ) == []
+
+    def test_disliked_prefetch_failure_does_not_stop_run(self, db, test_user, cf_profile):
+        response_json = json.dumps({
+            "recommendations": [], "reasoning": "No data.",
+            "has_sufficient_data": False,
+        })
+        mock_client = MagicMock()
+        mock_client.models.generate_content.return_value = _make_text_response(response_json)
+        with patch("app.services.recommendation_agent.settings", self._mock_settings()), \
+             patch("app.services.recommendation_agent.genai.Client", return_value=mock_client), \
+             patch.object(CoachRecommendationRepository, "get_recent_disliked_problems", side_effect=RuntimeError("DB timeout")):
+            result = RecommendationAgent(db, test_user.id).recommend()
+        assert result is not None
+        contents = mock_client.models.generate_content.call_args_list[0].kwargs["contents"]
+        assert '"disliked_recommendations": []' in contents[0].parts[0].text
+
+    def test_disliked_recommendations_reach_model(self, db, test_user, cf_profile):
+        response_json = json.dumps({
+            "recommendations": [], "reasoning": "No data.",
+            "has_sufficient_data": False,
+        })
+        mock_client = MagicMock()
+        mock_client.models.generate_content.return_value = _make_text_response(response_json)
+        disliked = [{"title": "Avoid This", "topics": ["Array"]}]
+        with patch("app.services.recommendation_agent.settings", self._mock_settings()), \
+             patch("app.services.recommendation_agent.genai.Client", return_value=mock_client), \
+             patch.object(CoachRecommendationRepository, "get_recent_disliked_problems", return_value=disliked) as lookup:
+            RecommendationAgent(db, test_user.id).recommend()
+        lookup.assert_called_once()
+        contents = mock_client.models.generate_content.call_args_list[0].kwargs["contents"]
+        assert '"disliked_recommendations": [{"title": "Avoid This", "topics": ["Array"]}]' in contents[0].parts[0].text
 
     def test_model_only_receives_search_tools(self, db, test_user, cf_profile):
         """The _SEARCH_TOOL_DECLARATIONS module-level constant must only contain

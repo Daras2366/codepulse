@@ -459,13 +459,16 @@ class _FakeChatAgent:
         self.last_usage = {"prompt_token_count": 10, "candidates_token_count": 4}
         self.captured_user_id = None
         self.captured_message = None
+        self.captured_history = None
 
     def chat(self, message, conversation_history=None):
         self.captured_message = message
+        self.captured_history = conversation_history
         return self._result
 
     def stream_chat(self, message, conversation_history=None):
         self.captured_message = message
+        self.captured_history = conversation_history
         yield from self._events
 
 
@@ -500,6 +503,28 @@ def _parse_sse(body: str) -> list[tuple[str, dict]]:
 
 
 class TestChatEndpointAgentPath:
+    @pytest.mark.parametrize("path", ["/ai-coach/chat", "/ai-coach/chat/stream"])
+    def test_long_assistant_history_is_truncated(self, client, path):
+        fake = _FakeChatAgent(
+            result=CoachChatResult(text="ok"),
+            events=[{"type": "done", "tool_calls_made": [], "model": "gemini-test"}],
+        )
+        p1, p2 = _patch_services(fake)
+        with p1, p2:
+            response = client.post(path, json={
+                "message": "Next question",
+                "conversation_history": [
+                    {"role": "assistant", "content": "x" * 9000}
+                ],
+            })
+        assert response.status_code == 200
+        assert fake.captured_history == [{"role": "assistant", "content": "x" * 8000}]
+
+    @pytest.mark.parametrize("path", ["/ai-coach/chat", "/ai-coach/chat/stream"])
+    def test_overlong_new_message_is_rejected(self, client, path):
+        response = client.post(path, json={"message": "x" * 1001})
+        assert response.status_code == 422
+
     def test_non_stream_uses_tool_agent(self, client, db, user_a):
         fake = _FakeChatAgent(
             result=CoachChatResult(

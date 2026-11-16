@@ -8,6 +8,9 @@ from sqlalchemy.orm import Session
 
 from app.models.coach import CoachFeedback, CoachRecommendation, CoachRun
 from app.models.enums import CoachFeedbackAction
+from app.models.problem import Problem
+from app.models.problem_topic import ProblemTopic
+from app.models.topic import Topic
 from app.repositories.base import BaseRepository
 
 
@@ -41,6 +44,42 @@ class CoachRecommendationRepository(BaseRepository):
             .filter(CoachRecommendation.id == recommendation_id)
             .first()
         )
+
+    def get_recent_disliked_problems(
+        self, user_id: int, since: datetime, limit: int = 20
+    ) -> list[dict]:
+        """Return only titles and topics for recently disliked recommendations."""
+        rows = (
+            self.db.query(CoachRecommendation.id, Problem.title)
+            .join(CoachFeedback, CoachFeedback.recommendation_id == CoachRecommendation.id)
+            .join(Problem, Problem.id == CoachRecommendation.problem_id)
+            .filter(
+                CoachRecommendation.user_id == user_id,
+                CoachFeedback.action == CoachFeedbackAction.THUMBS_DOWN,
+                CoachFeedback.created_at >= since,
+            )
+            .order_by(CoachFeedback.created_at.desc(), CoachFeedback.id.desc())
+            .limit(limit)
+            .all()
+        )
+        if not rows:
+            return []
+        recommendation_ids = [row.id for row in rows]
+        topic_rows = (
+            self.db.query(CoachRecommendation.id, Topic.name)
+            .join(ProblemTopic, ProblemTopic.problem_id == CoachRecommendation.problem_id)
+            .join(Topic, Topic.id == ProblemTopic.topic_id)
+            .filter(CoachRecommendation.id.in_(recommendation_ids))
+            .order_by(Topic.name)
+            .all()
+        )
+        topics_by_id: dict[int, list[str]] = {rec_id: [] for rec_id in recommendation_ids}
+        for rec_id, topic_name in topic_rows:
+            topics_by_id[rec_id].append(topic_name)
+        return [
+            {"title": row.title, "topics": topics_by_id[row.id]}
+            for row in rows
+        ]
 
     def get_for_run(self, run_id: int) -> List[CoachRecommendation]:
         return (

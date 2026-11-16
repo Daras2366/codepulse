@@ -17,7 +17,7 @@ import {
 } from "lucide-react";
 import * as React from "react";
 
-import { hasAccessToken } from "@/api/client";
+import { ApiError, hasAccessToken } from "@/api/client";
 import { getPerformanceProfile, type PerformanceProfile } from "@/api/analytics";
 import {
   streamChatWithCoach,
@@ -779,6 +779,7 @@ function ChatSection({ profile }: { profile: PerformanceProfile | undefined }) {
   const [message, setMessage] = React.useState("");
   const [conversationHistory, setConversationHistory] = React.useState<ChatMsg[]>([]);
   const [pendingUserMessage, setPendingUserMessage] = React.useState<string | null>(null);
+  const [sendErrorMessage, setSendErrorMessage] = React.useState<string | null>(null);
   const [isChatPending, setIsChatPending] = React.useState(false);
   const [toolStatuses, setToolStatuses] = React.useState<string[]>([]);
   const [streamText, setStreamText] = React.useState("");
@@ -800,6 +801,7 @@ function ChatSection({ profile }: { profile: PerformanceProfile | undefined }) {
 
     if (!overrideMessage) setMessage("");
     setPendingUserMessage(null);
+    setSendErrorMessage(null);
 
     abortRef.current?.abort();
     const controller = new AbortController();
@@ -814,7 +816,7 @@ function ChatSection({ profile }: { profile: PerformanceProfile | undefined }) {
     let accumulated = "";
     let settled = false;
 
-    const fail = (notConfigured = false) => {
+    const fail = (notConfigured = false, validationError = false) => {
       if (settled) return;
       settled = true;
       setIsChatPending(false);
@@ -835,6 +837,11 @@ function ChatSection({ profile }: { profile: PerformanceProfile | undefined }) {
       } else {
         setConversationHistory(priorHistory);
         setPendingUserMessage(text);
+        setSendErrorMessage(
+          validationError
+            ? "Message couldn't be sent. Please try again."
+            : "Message failed to send — the AI provider may be temporarily unavailable. Your message is preserved.",
+        );
       }
     };
 
@@ -867,7 +874,7 @@ function ChatSection({ profile }: { profile: PerformanceProfile | undefined }) {
     )
       .catch((err) => {
         if (err instanceof DOMException && err.name === "AbortError") return;
-        fail();
+        fail(false, err instanceof ApiError && [400, 413, 422].includes(err.status ?? 0));
       })
       .finally(() => {
         // Stream ended without done/error (e.g. server closed early).
@@ -941,8 +948,7 @@ function ChatSection({ profile }: { profile: PerformanceProfile | undefined }) {
             <div className="flex items-center gap-2 text-pink">
               <AlertCircle className="h-4 w-4 shrink-0" />
               <span className="text-caption">
-                Message failed to send — the AI provider may be temporarily unavailable. Your
-                message is preserved.
+                {sendErrorMessage}
               </span>
             </div>
             <button

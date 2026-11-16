@@ -649,13 +649,14 @@ class TestChatValidation:
         )
         assert response.status_code == 422
 
-    def test_oversized_history_content_rejected(self, client):
-        history = [{"role": "user", "content": "x" * 1001}]
-        response = client.post(
-            "/ai-coach/chat",
-            json={"message": "test", "conversation_history": history},
+    def test_oversized_history_content_truncated(self):
+        from app.routers.recommendations import ChatRequest
+
+        request = ChatRequest(
+            message="test",
+            conversation_history=[{"role": "assistant", "content": "x" * 9000}],
         )
-        assert response.status_code == 422
+        assert request.conversation_history[0].content == "x" * 8000
 
 
 # ---------------------------------------------------------------------------
